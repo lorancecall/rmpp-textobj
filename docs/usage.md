@@ -3,8 +3,8 @@
 - **Add text object** (T tool menu, under "Add text"): tap where the text goes, type, OK. The new object is selected
   so you can move it right away. It starts at about body-text size; the size you pick in the edit box is kept for
   the next one.
-- **Edit**: with the selection tool, double tap a text object to select it, double tap it again to open the edit box
-  (text, Thin / Medium / Thick, size). Selecting several objects and double tapping joins them into one.
+- **Edit**: with the selection tool, double tap a text object with a finger to select it (or lasso it), double
+  tap it again (pen or finger) to open the edit box (text, Thin / Medium / Thick, size). Selecting several objects and double tapping joins them into one.
 - **Always whole**: a lasso that covers part of a text object selects all of it (at least half of its strokes
   inside) or none of it, so moving, deleting and copying act on whole objects. A pasted copy is a text object too.
   Erasing part of an object turns it into plain strokes.

@@ -27,8 +27,8 @@ has **rmpp setup**, the installer for all rmpp add-ons.
 ## Use
 
 - **Add text object** (T tool menu): tap where the text goes, type, OK; the new object is selected to move it.
-- **Edit**: with the selection tool, double tap an object to select it, double tap again to edit its text, weight
-  and size.
+- **Edit**: with the selection tool, double tap an object with a finger to select it, double tap again to edit
+  its text, weight and size.
 - **Always whole**: lasso, move, copy and delete act on whole objects; erasing part of one makes it plain strokes.
 - **Highlights** snap to the characters and come back after an edit; underlines and other handwriting stay
   separate.
