@@ -13,9 +13,14 @@ On the tablet:
 - **Always whole**: a lasso that covers part of a text object selects all of it (at least half of its strokes
   inside) or none of it, so moving, deleting and copying act on whole objects. A pasted copy is a text object too.
   Erasing part of an object turns it into plain strokes.
-- **With highlights and handwriting**: a highlight or underline drawn on a text object goes with it (selected with
-  it, never recognized as handwriting); editing the text redraws it without the highlight. Other handwriting stays
-  separate: a lasso takes text objects (whole) and handwriting together as usual; with handwriting in the selection
+- **Highlights**: the highlighter on a text object snaps to its characters as on typed text: the stroke is replaced
+  by a band as high as the line and as wide as the characters it covers, in the same colour. The highlight is kept
+  with the object: it moves and is copied with it, and editing the text draws it again on the same characters
+  (text inserted before it moves it; its text deleted removes it). Erasing the band removes the highlight.
+  Highlights drawn before this version come back yellow after an edit. Snapping can be turned off with
+  `snapHighlights=false` in `~/.config/rmpp-textobj/settings.conf` (the highlight is still kept).
+- **With handwriting**: an underline drawn on a text object goes with it (selected with it, never recognized as
+  handwriting); editing the text removes it. Other handwriting stays separate: a lasso takes text objects (whole) and handwriting together as usual; with handwriting in the selection
   a double tap selects the tapped object alone, and another double tap edits it. Handwriting drawn across an object
   cannot be left out of its selection; the object can be edited once it is moved off.
 - **Handwriting to text objects**: [rmpp-hwr](https://github.com/lorancecall/rmpp-hwr) recognizes lasso-selected
@@ -42,7 +47,9 @@ Languages).
   bounds of each of its strokes). An object is found on a page by its strokes' pattern, wherever it was moved and at
   whatever size; nothing tracks positions. Records written by rmpp-hwr 0.2-0.4 (`~/.local/share/rmpp-hwr/ink.json`)
   are taken over once; their strokes are learned the first time each such object is selected.
-- `src/select.h`: the selection rules (double tap, partial lasso, erased objects).
+- `src/select.h`: the selection rules (double tap, partial lasso, erased objects) and the highlight check.
+- `src/highlight.h`: highlights: which characters a highlighter stroke covers, the bands, following an edit
+  (`tests/highlight_test.py` ports the geometry with unit tests).
 - `src/api.h`: the C API other add-ons call (rmpp-hwr): the selected objects' text, open the edit box, draw
   recognized lines as an object.
 - `tests/match_test.py`: the stroke-pattern matching ported to Python, with unit tests (`python tests/match_test.py`).

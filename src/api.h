@@ -103,7 +103,7 @@ RMPP_TEXTOBJ_API int rmpp_textobj_edit_selection(void) {
     QList<int> marks;
     const QList<Placement> objs = selectedObjects(po, sel, &only, nullptr, &marks);
     if (!only) return 0;
-    openObjectEdit(p.dv, p.sc, p.ph, po, objs, int(marks.size()));
+    openObjectEdit(p.dv, p.sc, p.ph, po, objs, marks);
     return g_edit.box ? 1 : 0;
 }
 

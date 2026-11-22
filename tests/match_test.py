@@ -225,10 +225,34 @@ def erased(rec, ri, page_rects, page):
     return not full and partial is not None and max(2, (rec.n + 1) // 2) <= partial["matched"] < rec.n
 
 
+def same_band(q, e, k):
+    """Port of highlight.h sameBand: page rect q shows highlight stroke rect e (page units)."""
+    cq = (q[0] + q[2] / 2, q[1] + q[3] / 2)
+    ce = (e[0] + e[2] / 2, e[1] + e[3] / 2)
+    if max(abs(cq[0] - ce[0]), abs(cq[1] - ce[1])) > max(POS_TOL + 1, 0.12 * e[3]):
+        return False
+    if abs(q[2] - e[2]) > max(4.0, 0.12 * e[2]) + e[3] * abs(1 - 1 / k):
+        return False
+    h0, h1 = min(e[3], e[3] / k), max(e[3], e[3] / k)
+    return 0.7 * h0 - 3 <= q[3] <= 1.3 * h1 + 3
+
+
+def is_band(recs, page_rects, p, i):
+    """Port of highlight.h isBand: page rect i shows a recorded highlight of object p (rec.hl: rects relative to the
+    record's bounds)."""
+    k, (dx, dy) = p["k"], p["d"]
+    for e in getattr(recs[p["rec"]], "hl", []):
+        if same_band(page_rects[i], (dx + e[0] * k, dy + e[1] * k, e[2] * k, e[3] * k), k):
+            return True
+    return False
+
+
 def is_mark(recs, page_rects, p, i):
     """Port of select.h isMark: a highlight / underline on object p."""
     if i in p["members"]:
         return False
+    if is_band(recs, page_rects, p, i):
+        return True
     r = page_rects[i]
     em = recs[p["rec"]].em * p["k"]
     if r[2] < 1.5 * em or r[2] < 1.5 * r[3]:
@@ -373,6 +397,25 @@ def main():
     page3 = page2 + [far]
     objs, only, rest, marks = selected_objects([rec], page3, f, set(f[0]["members"]) | {len(page3) - 1})
     check("object + a wide stroke elsewhere: not a mark", not only)
+
+    # 12. a short highlight (one letter): a mark once it is recorded (snapped band or freehand stroke), else it is
+    # handwriting like any other stroke on the object
+    short = (bx + 30, by + 4, int(em * 0.7), int(em * 0.8))
+    page4 = other + made + [short]
+    f = find_objects([rec], page4, "P")
+    si = len(page4) - 1
+    objs, only, rest, marks = selected_objects([rec], page4, f, set(f[0]["members"]) | {si})
+    check("short thick stroke, not recorded: not a mark", not only and rest == [si])
+    rec.hl = [(short[0] - bx, short[1] - by, short[2], short[3])]
+    objs, only, rest, marks = selected_objects([rec], page4, f, set(f[0]["members"]) | {si})
+    check("short highlight, recorded: a mark", only and marks == [si])
+    moved = [(r[0] + 333, r[1] + 77, r[2], r[3]) for r in made + [short]]
+    page5 = other + moved
+    f = find_objects([rec], page5, "P")
+    si = len(page5) - 1
+    objs, only, rest, marks = selected_objects([rec], page5, f, set(f[0]["members"]) | {si})
+    check("recorded highlight moved with the object: a mark", len(f) == 1 and only and marks == [si])
+    del rec.hl
 
     # 10. timing: a page with 2,000 strokes and 50 objects
     import time

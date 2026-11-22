@@ -5,30 +5,48 @@ QElapsedTimer g_putStarted;
 
 bool putting() { return g_putting && g_putStarted.isValid() && g_putStarted.elapsed() < 8000; }
 
+// The strokes to lasso for new ink: the glyph strokes, and the corners of its highlight bands.
+QList<QList<QPointF>> inkAndBands(const Placed &pl, const QList<Hl> &hls) {
+    QList<QList<QPointF>> out = pl.strokes;
+    for (const Hl &h : hls)
+        for (const QRectF &r : h.rects) out.append({r.topLeft(), r.bottomRight()});
+    return out;
+}
+
 // After new ink is added and selected: record it from the selection's stroke rects (removing the records in
 // `removeIds`, the object it replaces). The selection settles after a while (longer for big ink), so measure again
-// until it holds all n new strokes; select again if it is still empty (slow tool switch).
+// until it holds all n new strokes and the highlight bands; select again if it is still empty (slow tool switch).
+// Bands that did not come (not drawn, not selected) are left out after a few tries.
 void recordNew(QPointer<QObject> scp, const QString &page, const QString &text, const Placed &pl, int n,
-               const QStringList &removeIds, int attempt = 0) {
+               const QStringList &removeIds, const QList<Hl> &hls = {}, int attempt = 0) {
     QTimer::singleShot(attempt == 0 ? 300 : 400, qApp, [=] {
         if (!scp) { g_putting = false; return; }
+        const int nb = bandCount(hls);
         const int count = scp->property("selectionItemCount").toInt();
-        const QList<QRect> rects = count == n ? lineRects(scp) : QList<QRect>();
-        if (rects.size() != n) {
+        const bool full = count == n + nb, glyphsOnly = nb > 0 && count == n && attempt >= 4;
+        const QList<QRect> rects = full || glyphsOnly ? lineRects(scp) : QList<QRect>();
+        if (rects.size() != n + nb && !(glyphsOnly && rects.size() == n)) {
             if (count == 0 && (attempt == 1 || attempt == 3)) {
                 const bool switched = useSelectionTool();
                 TLOG("new ink not selected yet, selecting again%s", switched ? " (selection tool)" : "");
-                QTimer::singleShot(switched ? 500 : 0, scp, [scp, pl] { if (scp) selectInk(scp, pl.strokes); });
+                QTimer::singleShot(switched ? 500 : 0, scp, [scp, pl, hls] { if (scp) selectInk(scp, inkAndBands(pl, hls)); });
             }
-            if (attempt < 6) recordNew(scp, page, text, pl, n, removeIds, attempt + 1);
+            if (attempt < 6) recordNew(scp, page, text, pl, n, removeIds, hls, attempt + 1);
             else {
-                TLOG("new ink not selected (%d of %d), not recorded: plain strokes", count, n);
+                TLOG("new ink not selected (%d of %d), not recorded: plain strokes", count, n + nb);
                 g_putting = false;
             }
             return;
         }
-        updateRecords(makeRecord(page, text, rects, pl.origin, pl.em, pl.weight), removeIds);
-        TLOG("recorded: %d strokes", n);
+        QList<Hl> found = hls;
+        const QList<QRect> glyphs = nb > 0 ? splitBands(rects, &found) : rects;
+        if (glyphs.size() != n) {
+            TLOG("new ink: %lld strokes are not %d glyphs and %d bands: not recorded", (long long)rects.size(), n, nb);
+            g_putting = false;
+            return;
+        }
+        updateRecords(makeRecord(page, text, glyphs, pl.origin, pl.em, pl.weight, QString(), pl.lines, hlJson(found)), removeIds);
+        TLOG("recorded: %d strokes, %lld highlight(s)", n, (long long)found.size());
         QTimer::singleShot(600, qApp, [] { g_putting = false; });   // after the selection count settled
     });
 }
@@ -37,8 +55,10 @@ void recordNew(QPointer<QObject> scp, const QString &page, const QString &text, 
 // settled, selects them (the user moves the new object right away; double tap edits it) and records them.
 // The page is redrawn once: fullRefresh (after the edit box: it and the keyboard left ghosting) = one ghost-buster
 // refresh; otherwise one updateAfterStroke.
+// Highlights (hls, band rects in page units) are drawn first, under the glyphs.
 void putInk(QPointer<QObject> scp, QPointer<QObject> php, QPointer<QQuickItem> dvp, int layer, bool deleteSelection,
-            const Placed &pl, const QString &text, const QStringList &removeIds, bool fullRefresh = false) {
+            const Placed &pl, const QString &text, const QStringList &removeIds, bool fullRefresh = false,
+            const QList<Hl> &hls = {}) {
     g_putting = true;
     g_putStarted.start();
     // addDrawingLine is ignored while a selection is active
@@ -46,11 +66,12 @@ void putInk(QPointer<QObject> scp, QPointer<QObject> php, QPointer<QQuickItem> d
     else endSelection(scp, dvp);
     QTimer::singleShot(400, scp, [=] {
         if (!scp || !php) { g_putting = false; return; }
+        const int bands = hls.isEmpty() ? 0 : addBands(scp, hls);
         const int added = addInkStrokes(scp, php, pl.strokes, pl.em, pl.weight);
         if (added > 0) {
-            selectInk(scp, pl.strokes);
+            selectInk(scp, inkAndBands(pl, bands > 0 ? hls : QList<Hl>()));
             recordNew(scp, dvp ? dvp->property("currentPageId").toString() : scp->property("pageId").toString(), text, pl,
-                      added, removeIds);
+                      added, removeIds, bands > 0 ? hls : QList<Hl>());
         } else {
             g_putting = false;
             if (added < 0) showHint(dvp, QStringLiteral("rmpp-textobj: this xochitl version is not supported"));
@@ -191,7 +212,9 @@ struct InkEdit {
     QString text0;                // the object's text when the box opened (edit)
     int weight0 = 1;
     QStringList removeIds;        // records the edited object(s) replace
-    int marks = 0;                // highlights / underlines on the edited object(s): deleted with them
+    QString joined;               // the text(s) when the box opened, as in the box
+    QList<Hl> hls;                // highlights on them (ranges in joined): drawn again on the new text
+    int underlines = 0;           // other marks (underlines) on the edited object(s): deleted with them
 };
 InkEdit g_edit;
 
@@ -259,7 +282,9 @@ void showInkEditBox(QQuickItem *dv, InkEdit e, const QString &title, const QStri
 
 // Edit the selected object(s) (found on the page as `found` placements of po): one object -> its text; several ->
 // their texts top to bottom in one box, drawn as one object at the first one's place.
-void openObjectEdit(QQuickItem *dv, QObject *sc, QObject *ph, const PageObjects &po, QList<Placement> objs, int marks = 0) {
+// marks: page rect indices of marks on the objects (highlights: drawn again after the edit; underlines: not).
+void openObjectEdit(QQuickItem *dv, QObject *sc, QObject *ph, const PageObjects &po, QList<Placement> objs,
+                    const QList<int> &marks = {}) {
     if (objs.isEmpty() || g_edit.box) return;
     std::sort(objs.begin(), objs.end(), [](const Placement &a, const Placement &b) { return a.box.top() < b.box.top(); });
     const QString pageId = dv->property("currentPageId").toString();
@@ -271,18 +296,41 @@ void openObjectEdit(QQuickItem *dv, QObject *sc, QObject *ph, const PageObjects 
     e.origin = originOf(first, objs.first());
     e.maxW = qMax(810.0 - 40.0 - e.origin.x(), e.em * 8);
     QStringList texts;
+    QSet<int> used;
+    int base = 0;   // offset of this object's text in the joined text (code points)
     for (const Placement &p : objs) {
         const Rec &r = po.recs[p.rec];
         texts << r.text;
+        // its highlights: recorded ones that show here (their strokes are among the marks), and freehand ones
+        const QList<Hl> recHl = hlOf(r, &p);
+        QList<bool> shown(recHl.size(), false);
+        for (int m : marks) {
+            if (used.contains(m)) continue;
+            bool band = false;
+            for (int j = 0; j < recHl.size(); ++j)
+                for (const QRectF &er : recHl[j].rects)
+                    if (sameBand(po.rects[m], er, p.k)) { shown[j] = true; band = true; }
+            if (band) { used.insert(m); continue; }
+            Hl h;
+            if (isHighlightStroke(po, p, m) && rangeFromRect(r.text, pageLines(r, p), QRectF(po.rects[m]), &h.a, &h.b)) {
+                h.a += base; h.b += base;
+                e.hls.append(h);   // drawn before this build: colour unknown, yellow
+                used.insert(m);
+            }
+        }
+        for (int j = 0; j < recHl.size(); ++j)
+            if (shown[j]) { Hl h = recHl[j]; h.a += base; h.b += base; h.rects.clear(); e.hls.append(h); }
+        base += int(r.text.toUcs4().size()) + 1;
         // the record goes with its strokes, unless another copy of the object stays on this page
         int copies = 0;
         for (const Placement &q : po.found) if (q.rec == p.rec) ++copies;
         if (copies <= 1 && r.page == pageId && !e.removeIds.contains(r.id)) e.removeIds << r.id;
     }
     e.text0 = objs.size() == 1 ? first.text : QString();
-    e.marks = marks;
+    e.joined = texts.join(QLatin1Char('\n'));
+    for (int m : marks) if (!used.contains(m)) ++e.underlines;
     e.weight0 = first.weight;
-    TLOG("edit: %lld object(s)", (long long)objs.size());
+    TLOG("edit: %lld object(s), %lld highlight(s), %d other mark(s)", (long long)objs.size(), (long long)e.hls.size(), e.underlines);
     showInkEditBox(dv, e, objs.size() == 1 ? QStringLiteral("Edit text") : QStringLiteral("Edit text (objects joined)"),
                    texts.join(QLatin1Char('\n')), first.weight);
 }
@@ -328,8 +376,9 @@ bool applyInkEdit(const InkEdit &e) {
         });
         return true;
     }
-    putInk(e.sc, e.ph, e.dv, e.layer, true, pl, text, e.removeIds, true);
-    if (e.marks > 0) showHint(e.dv, QStringLiteral("The highlight on the text was removed with the old text. Highlight it again if you like."), 5000);
+    const QList<Hl> hls = placeHighlights(e.hls, e.joined, text, pl.lines);
+    putInk(e.sc, e.ph, e.dv, e.layer, true, pl, text, e.removeIds, true, hls);
+    if (e.underlines > 0) showHint(e.dv, QStringLiteral("The marks on the text were removed with the old text. Draw them again if you like."), 5000);
     return true;
 }
 

@@ -1,7 +1,9 @@
 // ---- text object records (objects.json) and finding the objects on a page ----
 // One record per object: {"id", "page", "text", "n" (strokes), "em", "weight", "w", "h" (bounds), "ox", "oy" (em
 // origin of the first line relative to the bounds' top-left), "rects": [x, y, w, h, ...] (bounds of each stroke
-// relative to the bounds' top-left, as xochitl reports them)}. The bounds are the union of the stroke rects.
+// relative to the bounds' top-left, as xochitl reports them), "lines": [[text, x, y, em], ...] (each drawn line's em
+// box, relative to the bounds' top-left), "hl": highlights (src/highlight.h)}. The bounds are the union of the stroke
+// rects. Records without "lines" (earlier builds) have their text's lines 1.15 em apart from (ox, oy).
 //
 // An object is found on a page by its stroke rects: wherever it was moved (and whatever size it was scaled to), its
 // strokes keep their pattern, so the page's stroke rects (SceneController::getLineBoundingRectsToBeSelected) are
@@ -57,6 +59,8 @@ struct Rec {
     int n = 0, weight = 1;
     double em = 60, w = 0, h = 0, ox = 0, oy = 0;
     QList<QRect> rects;   // relative to the bounds' top-left; empty for legacy records
+    QList<LineBox> lines; // relative to the bounds' top-left
+    QJsonArray hl;        // highlights (src/highlight.h)
 };
 
 Rec recFrom(const QJsonObject &o) {
@@ -74,6 +78,15 @@ Rec recFrom(const QJsonObject &o) {
     const QJsonArray a = o.value(QStringLiteral("rects")).toArray();
     for (int i = 0; i + 3 < a.size(); i += 4) r.rects.append(QRect(a[i].toInt(), a[i + 1].toInt(), a[i + 2].toInt(), a[i + 3].toInt()));
     if (r.rects.size() != r.n) r.rects.clear();
+    for (const QJsonValue &v : o.value(QStringLiteral("lines")).toArray()) {
+        const QJsonArray l = v.toArray();
+        if (l.size() == 4) r.lines.append(LineBox{l[0].toString(), QPointF(l[1].toDouble(), l[2].toDouble()), l[3].toDouble()});
+    }
+    if (r.lines.isEmpty()) {
+        const QStringList ts = r.text.split(QLatin1Char('\n'));
+        for (int i = 0; i < ts.size(); ++i) r.lines.append(LineBox{ts[i], QPointF(r.ox, r.oy + i * 1.15 * r.em), r.em});
+    }
+    r.hl = o.value(QStringLiteral("hl")).toArray();
     return r;
 }
 
@@ -89,18 +102,53 @@ QRect unite(const QList<QRect> &rs) {
     return b;
 }
 
-// A record for strokes now on the page: their rects (page units), the text, the em origin (page units) and size.
+// A record for strokes now on the page: their rects (page units), the text, the em origin (page units) and size,
+// the drawn lines (page units; none: from the text) and highlights (their "r" in page units here).
 QJsonObject makeRecord(const QString &page, const QString &text, const QList<QRect> &rects, const QPointF &origin,
-                       double em, int weight, const QString &id = QString()) {
+                       double em, int weight, const QString &id = QString(), const QList<LineBox> &lines = {},
+                       const QJsonArray &hl = {}) {
     const QRect b = unite(rects);
     QJsonArray flat;
     for (const QRect &r : rects) { flat.append(r.x() - b.x()); flat.append(r.y() - b.y()); flat.append(r.width()); flat.append(r.height()); }
-    return QJsonObject{{QStringLiteral("id"), id.isEmpty() ? newRecordId() : id}, {QStringLiteral("page"), page},
-                       {QStringLiteral("text"), text}, {QStringLiteral("n"), int(rects.size())},
-                       {QStringLiteral("em"), em}, {QStringLiteral("weight"), weight},
-                       {QStringLiteral("w"), b.width()}, {QStringLiteral("h"), b.height()},
-                       {QStringLiteral("ox"), origin.x() - b.x()}, {QStringLiteral("oy"), origin.y() - b.y()},
-                       {QStringLiteral("rects"), flat}};
+    QJsonObject o{{QStringLiteral("id"), id.isEmpty() ? newRecordId() : id}, {QStringLiteral("page"), page},
+                  {QStringLiteral("text"), text}, {QStringLiteral("n"), int(rects.size())},
+                  {QStringLiteral("em"), em}, {QStringLiteral("weight"), weight},
+                  {QStringLiteral("w"), b.width()}, {QStringLiteral("h"), b.height()},
+                  {QStringLiteral("ox"), origin.x() - b.x()}, {QStringLiteral("oy"), origin.y() - b.y()},
+                  {QStringLiteral("rects"), flat}};
+    if (!lines.isEmpty()) {
+        QJsonArray ls;
+        for (const LineBox &l : lines) ls.append(QJsonArray{l.t, l.o.x() - b.x(), l.o.y() - b.y(), l.em});
+        o.insert(QStringLiteral("lines"), ls);
+    }
+    if (!hl.isEmpty()) {
+        QJsonArray out;
+        for (const QJsonValue &v : hl) {
+            QJsonObject h = v.toObject();
+            const QJsonArray r = h.value(QStringLiteral("r")).toArray();
+            QJsonArray rel;
+            for (int i = 0; i + 3 < r.size(); i += 4)
+                rel << r[i].toDouble() - b.x() << r[i + 1].toDouble() - b.y() << r[i + 2] << r[i + 3];
+            h.insert(QStringLiteral("r"), rel);
+            out.append(h);
+        }
+        o.insert(QStringLiteral("hl"), out);
+    }
+    return o;
+}
+
+// Replaces the highlights of record id (hl with "r" relative to the record's bounds, record units).
+void setRecordHl(const QString &id, const QJsonArray &hl) {
+    QJsonArray recs = readRecords();
+    for (int i = 0; i < recs.size(); ++i) {
+        QJsonObject o = recs[i].toObject();
+        if (o.value(QStringLiteral("id")).toString() != id) continue;
+        if (hl.isEmpty()) o.remove(QStringLiteral("hl"));
+        else o.insert(QStringLiteral("hl"), hl);
+        recs[i] = o;
+        writeRecords(recs);
+        return;
+    }
 }
 
 // Adds `add` (if not empty) and removes the records with ids in `remove`; keeps the newest 1000.

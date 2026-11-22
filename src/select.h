@@ -167,8 +167,10 @@ QElapsedTimer g_lastDoubleTap;
 // The selection is exactly whole text objects: those objects (else empty).
 // A mark on object p (highlight, underline): not one of its strokes, at least 1.5 em long, wider than tall, and
 // mostly (80%) on the object.
+// Also a recorded highlight (src/highlight.h: a band, or a highlighter stroke not snapped yet) of any length.
 bool isMark(const PageObjects &po, const Placement &p, int i) {
     if (p.members.contains(i)) return false;
+    if (isBand(po, p, i)) return true;
     const QRect &r = po.rects[i];
     const double em = po.recs[p.rec].em * p.k;
     if (r.width() < 1.5 * em || r.width() < 1.5 * r.height()) return false;
@@ -221,7 +223,7 @@ void editSelectedObjects() {
     QList<int> marks;
     const QList<Placement> objs = selectedObjects(po, sel, &only, nullptr, &marks);
     if (!only) { TLOG("double tap: the selection is not (only) text objects"); return; }
-    openObjectEdit(dv, sc, ph, po, objs, int(marks.size()));
+    openObjectEdit(dv, sc, ph, po, objs, marks);
 }
 
 // xochitl's selection handler areas emit doubleClicked on a double tap on the selection (pen and finger).
@@ -321,12 +323,159 @@ void doubleTapAt(double x, double y) {
     });
 }
 
+// ---- highlights drawn on objects (src/highlight.h) ----
+// A highlighter stroke found on an object: the record, where the object is, the stroke, the highlight (its index in
+// the record's list) and its bands (page units).
+struct HlCapture {
+    QString recId;
+    QPointF d;
+    double k = 1;
+    QString strokeKey;
+    int index = 0;
+    Hl hl;
+    QList<QRectF> bands;
+};
+
+// Replaces the freehand highlighter strokes of caps by bands: the selection tool for a moment (to select and delete
+// the strokes), the bands drawn, the tool in use before tapped again, and the bands' rects recorded.
+void snapHighlights(QQuickItem *dv, QObject *sc, const QList<HlCapture> &caps) {
+    if (caps.isEmpty() || !g_state->value(QStringLiteral("snapHighlights")).toBool()) return;
+    QQuickItem *prev = activeToolButton();
+    if (!prev) { TLOG("highlight recorded; no tool button to come back to: not snapped"); return; }
+    TLOG("snapping %lld highlight(s); back to %s after", (long long)caps.size(), qPrintable(prev->objectName()));
+    g_putting = true;
+    g_putStarted.start();
+    QPointer<QObject> scp(sc);
+    QPointer<QQuickItem> dvp(dv), prevp(prev);
+    const int layer = sc->property("currentLayer").toInt();
+    QSet<QString> keys;
+    for (const HlCapture &c : caps) keys.insert(c.strokeKey);
+    auto giveUp = [scp, dvp, prevp](const char *why) {
+        TLOG("highlight not snapped: %s", why);
+        if (scp) endSelection(scp, dvp);
+        QTimer::singleShot(300, qApp, [prevp] { if (prevp) tapItem(prevp); g_putting = false; });
+    };
+    useSelectionTool();
+    QTimer::singleShot(600, sc, [=] {
+        if (!scp) { g_putting = false; return; }
+        const QList<QRect> rects = pageLineRects(scp);
+        QList<int> want;
+        for (int i = 0; i < rects.size(); ++i) if (keys.contains(rectKey(rects[i]))) want << i;
+        if (want.size() != keys.size()) { giveUp("the stroke is gone"); return; }
+        setSelection(scp, rects, want, [=] {
+            if (!scp) { g_putting = false; return; }
+            QSet<QString> sel;
+            for (const QRect &r : lineRects(scp)) sel.insert(rectKey(r));
+            if (sel != keys) { giveUp("the stroke could not be selected alone"); return; }
+            QMetaObject::invokeMethod(scp, "deleteSelectedItems", Q_ARG(int, layer));
+            QTimer::singleShot(400, scp, [=] {
+                if (!scp) { g_putting = false; return; }
+                QList<Hl> draw;
+                for (const HlCapture &c : caps) { Hl h = c.hl; h.rects = c.bands; draw << h; }
+                const int drawn = addBands(scp, draw);
+                QTimer::singleShot(300, qApp, [prevp, dvp] {
+                    if (prevp) tapItem(prevp);
+                    if (dvp) QMetaObject::invokeMethod(dvp, "updateAfterStroke");
+                });
+                QTimer::singleShot(1200, qApp, [=] {
+                    // the bands' rects into the records (a highlight whose band did not come keeps the deleted
+                    // stroke's rect: the next check drops it)
+                    if (scp && drawn > 0) {
+                        const QList<QRect> now = pageLineRects(scp);
+                        const QList<Rec> recs = readRecs();
+                        QHash<QString, QList<Hl>> changed;
+                        for (const HlCapture &c : caps) {
+                            QList<QRectF> found;
+                            for (const QRectF &e : c.bands)
+                                for (const QRect &q : now)
+                                    if (sameBand(q, e, 1.0)) { found << QRectF((QPointF(q.topLeft()) - c.d) / c.k, QSizeF(q.size()) / c.k); break; }
+                            if (found.isEmpty()) continue;
+                            if (!changed.contains(c.recId))
+                                for (const Rec &r : recs) if (r.id == c.recId) changed[c.recId] = hlOf(r);
+                            QList<Hl> &hl = changed[c.recId];
+                            if (c.index < hl.size()) hl[c.index].rects = found;
+                        }
+                        for (auto it = changed.cbegin(); it != changed.cend(); ++it) setRecordHl(it.key(), hlJson(it.value()));
+                        TLOG("highlight snapped: %d band(s)", drawn);
+                    } else if (drawn < 0) {
+                        TLOG("highlight bands: this xochitl version is not supported");
+                    }
+                    g_putting = false;
+                });
+            });
+        });
+    });
+}
+
+// After the page's strokes changed (settled): highlights whose strokes are gone are dropped from their records; new
+// highlighter strokes on objects (the highlighter is in use) are recorded and snapped.
+void checkHighlights(QQuickItem *dv, QObject *sc, const QString &pageId, const QSet<QString> &newKeys) {
+    const PageObjects po = findObjects(sc, pageId, true);
+    if (po.found.isEmpty()) return;
+    // gone: none of a highlight's strokes on any copy of the object
+    QHash<int, QSet<int>> shown;   // record index -> highlights seen
+    QSet<int> seen;
+    for (const Placement &p : po.found) {
+        const QList<Hl> hls = hlOf(po.recs[p.rec], &p);
+        if (hls.isEmpty()) continue;
+        seen.insert(p.rec);
+        for (int j = 0; j < hls.size(); ++j)
+            for (const QRectF &e : hls[j].rects)
+                for (const QRect &q : po.rects)
+                    if (sameBand(q, e, p.k)) { shown[p.rec].insert(j); break; }
+    }
+    for (int ri : seen) {
+        const QList<Hl> hls = hlOf(po.recs[ri]);
+        QList<Hl> keep;
+        for (int j = 0; j < hls.size(); ++j) if (hls[j].rects.isEmpty() || shown[ri].contains(j)) keep << hls[j];
+        if (keep.size() == hls.size()) continue;
+        setRecordHl(po.recs[ri].id, hlJson(keep));
+        TLOG("%lld highlight(s) erased", (long long)(hls.size() - keep.size()));
+    }
+    // new highlighter strokes
+    int color = kHighlighterYellow;
+    uint argb = 0;
+    if (newKeys.isEmpty() || !highlighterInUse(dv->property("penHandler").value<QObject *>(), &color, &argb)) return;
+    QList<HlCapture> caps;
+    QHash<QString, QList<Hl>> recHl;
+    for (int i = 0; i < po.rects.size(); ++i) {
+        if (!newKeys.contains(rectKey(po.rects[i]))) continue;
+        for (const Placement &p : po.found) {
+            if (isBand(po, p, i)) break;
+            const Rec &r = po.recs[p.rec];
+            HlCapture c;
+            if (!isHighlightStroke(po, p, i) || !rangeFromRect(r.text, pageLines(r, p), QRectF(po.rects[i]), &c.hl.a, &c.hl.b))
+                continue;
+            if (!recHl.contains(r.id)) recHl[r.id] = hlOf(r);
+            c.recId = r.id; c.d = p.d; c.k = p.k;
+            c.strokeKey = rectKey(po.rects[i]);
+            c.hl.color = color; c.hl.argb = argb;
+            c.bands = bandRects(r.text, pageLines(r, p), c.hl.a, c.hl.b);
+            Hl stored = c.hl;   // shown by the freehand stroke until it is snapped
+            stored.rects = {QRectF((QPointF(po.rects[i].topLeft()) - p.d) / p.k, QSizeF(po.rects[i].size()) / p.k)};
+            c.index = int(recHl[r.id].size());
+            recHl[r.id].append(stored);
+            caps << c;
+            break;
+        }
+    }
+    if (caps.isEmpty()) return;
+    for (auto it = recHl.cbegin(); it != recHl.cend(); ++it) setRecordHl(it.key(), hlJson(it.value()));
+    TLOG("%lld highlight(s) drawn on text objects (colour %d)", (long long)caps.size(), color);
+    snapHighlights(dv, sc, caps);
+}
+
 // ---- rule 3: erased objects become plain strokes ----
 // From the 1.5 s timer: once the open page's strokes have changed and stayed the same for a tick, the page's
 // objects are looked for; a record whose strokes are found only in part (at least half, not all) was erased in
 // part: its record is dropped. An object not found at all keeps its record (deleted, or not loaded yet: undo
-// brings it back).
-struct PageCheck { QString page; int seen = -1, checked = -1; };
+// brings it back). Then the highlights (checkHighlights): the strokes new since the last check, none on a page
+// just opened.
+struct PageCheck {
+    QString page;
+    QSet<QString> seen, checked;
+    bool once = false;
+};
 PageCheck g_check;
 
 void checkErasedObjects() {
@@ -335,13 +484,17 @@ void checkErasedObjects() {
     QObject *sc = dv ? dv->property("sceneController").value<QObject *>() : nullptr;
     if (!sc) return;
     const QString pageId = dv->property("currentPageId").toString();
-    if (pageId != g_check.page) g_check = PageCheck{pageId};
+    if (pageId != g_check.page) { g_check = PageCheck{}; g_check.page = pageId; }
     const QList<QRect> rects = pageLineRects(sc);
-    const int n = int(rects.size());
-    const bool settled = n == g_check.seen;
-    g_check.seen = n;
-    if (!settled || n == g_check.checked || n == 0) return;
-    g_check.checked = n;
+    QSet<QString> keys;
+    for (const QRect &r : rects) keys.insert(rectKey(r));
+    const bool settled = keys == g_check.seen;
+    g_check.seen = keys;
+    if (!settled || (g_check.once && keys == g_check.checked) || rects.isEmpty()) return;
+    QSet<QString> added;
+    if (g_check.once) for (const QString &k : keys) if (!g_check.checked.contains(k)) added.insert(k);
+    g_check.checked = keys;
+    g_check.once = true;
     const QList<Rec> recs = readRecs();
     const RectIndex idx(rects);
     QStringList drop;
@@ -353,7 +506,9 @@ void checkErasedObjects() {
         findRec(r, i, rects, idx, &full, &partial, scaleAllowed(r, pageId));
         if (full.isEmpty() && partial.matched >= qMax(2, (r.n + 1) / 2) && partial.matched < r.n) drop << r.id;
     }
-    if (drop.isEmpty()) return;
-    updateRecords({}, drop);
-    TLOG("%lld text object(s) erased in part: plain strokes now", (long long)drop.size());
+    if (!drop.isEmpty()) {
+        updateRecords({}, drop);
+        TLOG("%lld text object(s) erased in part: plain strokes now", (long long)drop.size());
+    }
+    checkHighlights(dv, sc, pageId, added);
 }

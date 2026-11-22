@@ -74,6 +74,8 @@ void loadSettings() {
     if (em <= 0) em = QSettings(QStringLiteral("/home/root/.config/rmpp-hwr/settings.conf"), QSettings::IniFormat)
                           .value(QStringLiteral("addTextEm"), 0.0).toDouble();   // rmpp-hwr 0.4 test builds kept it
     g_state->insert(QStringLiteral("addTextEm"), em);
+    // highlighter strokes on text objects are replaced by bands snapped to the characters (src/highlight.h)
+    g_state->insert(QStringLiteral("snapHighlights"), s.value(QStringLiteral("snapHighlights"), true).toBool());
 }
 
 void saveSetting(const QString &key, const QVariant &v) {
@@ -235,6 +237,7 @@ bool uiReady() {
 #include "glyphs.h"
 #include "ink.h"
 #include "objects.h"
+#include "highlight.h"
 #include "edit.h"
 #include "addtext.h"
 #include "select.h"

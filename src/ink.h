@@ -104,14 +104,23 @@ QRectF selectionRect(QObject *sc, int layer) {
 }
 
 // ---- placing text ----
+// One drawn line: its text and em box (top-left, size; page units). Highlights are placed on these.
+struct LineBox {
+    QString t;
+    QPointF o;
+    double em = 0;
+};
+
 struct Placed {
     QList<QList<QPointF>> strokes;
     QPointF origin;   // top-left of the first line's em box
     double em = 0;    // em height of the first line
     int weight = 1;   // 0 thin, 1 medium, 2 thick
+    QList<LineBox> lines;   // every visual line, blank ones too
 };
 
 void appendLine(Placed *out, const QString &text, const QPointF &origin, double h) {
+    out->lines.append(LineBox{text, origin, h});
     QList<QList<QPointF>> em;
     layoutLine(text, &em);
     for (const auto &s : em) {
@@ -189,6 +198,7 @@ Placed placeText(const QString &text, const QPointF &origin, double em, double m
         const QStringList lines = maxWidth > 0 ? wrapParagraph(para, maxWidth / em) : QStringList{para};
         for (const QString &line : lines) {
             if (!blankText(line)) appendLine(&out, line, QPointF(origin.x(), y), em);
+            else out.lines.append(LineBox{line, QPointF(origin.x(), y), em});
             y += em * 1.15;
         }
     }
