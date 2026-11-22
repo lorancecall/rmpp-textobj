@@ -1,6 +1,6 @@
 # Developing rmpp-textobj
 
-Build, tests and trying a build on the tablet: [install.md](install.md#build-and-install-by-hand).
+Build, tests and trying a build on the Paper Pro: [install.md](install.md#build-and-install-by-hand).
 
 ## Code
 

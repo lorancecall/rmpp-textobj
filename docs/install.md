@@ -19,7 +19,7 @@ Dependencies are installed automatically, in rmpp setup and with `vellum add`. A
 ## Without rmpp setup
 
 Follow [manual-install.md](https://github.com/lorancecall/rmpp-packages/blob/main/docs/manual-install.md) (Vellum and
-the rmpp package repository), then on the tablet:
+the rmpp package repository), then on the Paper Pro:
 
 ```sh
 vellum add rmpp-textobj        # with rmpp-lang, rmpp-preload
@@ -42,7 +42,7 @@ It runs next to xovi and other Vellum packages: [how-it-works.md](https://github
 
 ## Build and install by hand
 
-For development. Cross-compiled with the Arm GNU aarch64 toolchain against Qt 6.10 headers and the tablet's Qt
+For development. Cross-compiled with the Arm GNU aarch64 toolchain against Qt 6.10 headers and the Paper Pro's Qt
 libraries (`SDK=../sdk` by default):
 
 ```sh
@@ -69,6 +69,6 @@ The package recipe (VELBUILD) is in
 [rmpp-packages/packages](https://github.com/lorancecall/rmpp-packages/tree/main/packages); the next `vellum upgrade`
 or reinstall puts the released files back.
 
-On the tablet, never run `systemctl stop xochitl` (it powers the tablet off); run `systemctl reset-failed xochitl`
+On the Paper Pro, never run `systemctl stop xochitl` (it powers the Paper Pro off); run `systemctl reset-failed xochitl`
 before `systemctl restart xochitl` (repeated restarts otherwise hit systemd's limit). The root file system is
 read-only: `mount -o remount,rw /` before changing files under `/usr/lib/rmpp`, `mount -o remount,ro /` after.
