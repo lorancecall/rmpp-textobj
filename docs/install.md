@@ -27,7 +27,7 @@ vellum upgrade                           # later: updates
 vellum reenable                          # after a reMarkable OS update
 ```
 
-## Building and installing it yourself (developers)
+## Build and install by hand
 
 Building needs the Arm GNU aarch64 toolchain and Qt 6.10 headers/device libraries in `../sdk` (as for rmpp-hwr):
 `./build.sh` -> `build/librmpp-textobj-ui.so`. The ASCII glyphs: `python tools/glyphs.py build --font
