@@ -5,6 +5,12 @@
 //    fewer -> its strokes are taken out of the selection. So move, delete and copy always act on whole objects. A
 //    pasted copy has the same strokes, so it is the same text object (found by its stroke pattern).
 // 3. A text object with strokes erased (or partly erased) becomes plain strokes: its record is dropped.
+// Marks drawn on a text object (a highlight, an underline: a stroke at least 1.5 em long and wider than tall, lying
+// on the object) go with it: a selection of objects and their marks counts as "only text objects" (double tap
+// edits, rmpp-hwr does not recognize the marks as handwriting). Editing redraws the text without the marks (they
+// are deleted with the old strokes: xochitl deletes the selection, and a mark cannot be taken out of it alone).
+// Other handwriting is never part of an object: a lasso takes it along as usual; with it in the selection, a double
+// tap on an object selects that object alone (another double tap edits it).
 //
 // Changing the selection: addSelectionRect mode 0 selects the strokes inside a rect (replacing the selection), mode 1
 // takes the strokes inside a rect out. There is no "add": a selection is rebuilt as the strokes inside the bounds of
@@ -70,19 +76,33 @@ void dropFromSelection(QPointer<QObject> scp, const QList<QRect> &rects, const Q
 }
 
 // A legacy record (rmpp-hwr, no rects) whose strokes are exactly the selection: give it its rects now.
+// Also when the object was highlighted since: strokes spanning much of the selection's width (marks) are left out
+// first (glyph strokes never are that wide).
 void upgradeLegacy(QObject *sc, const QString &pageId, const QList<QRect> &sel) {
-    const QRectF sr = selectionRect(sc, sc->property("currentLayer").toInt());
-    if (sr.isEmpty() || sel.isEmpty()) return;
+    if (sel.isEmpty()) return;
+    const QRect all = unite(sel);
+    QList<int> widths;
+    for (const QRect &r : sel) widths << r.width();
+    std::sort(widths.begin(), widths.end());
+    const int med = widths[widths.size() / 2];
+    QList<QRect> glyphs;
+    for (const QRect &r : sel)
+        if (!(r.width() >= 0.4 * all.width() && r.width() >= 2.5 * med && r.width() >= 1.5 * r.height()) || sel.size() < 3) glyphs << r;
     const QJsonArray recs = readRecords();
-    for (int i = int(recs.size()) - 1; i >= 0; --i) {
-        const Rec r = recFrom(recs[i].toObject());
-        if (!r.rects.isEmpty() || r.page != pageId || r.n != sel.size() || r.h <= 0) continue;
-        if (qAbs(r.w / r.h - sr.width() / sr.height()) / (r.w / r.h) >= 0.04) continue;
-        const double k = sr.width() / qMax(1.0, r.w);
-        const QPointF origin = sr.topLeft() + QPointF(r.ox, r.oy) * k;
-        updateRecords(makeRecord(r.page, r.text, sel, origin, r.em * k, r.weight, r.id), {r.id});
-        TLOG("record from rmpp-hwr now has its strokes (%d)", r.n);
-        return;
+    for (const QList<QRect> &cand : {sel, glyphs}) {
+        const QRect sr = unite(cand);
+        if (sr.isEmpty()) continue;
+        for (int i = int(recs.size()) - 1; i >= 0; --i) {
+            const Rec r = recFrom(recs[i].toObject());
+            if (!r.rects.isEmpty() || r.page != pageId || r.n != cand.size() || r.h <= 0) continue;
+            if (qAbs(r.w / r.h - double(sr.width()) / sr.height()) / (r.w / r.h) >= 0.05) continue;
+            const double k = sr.width() / qMax(1.0, r.w);
+            const QPointF origin = QPointF(sr.topLeft()) + QPointF(r.ox, r.oy) * k;
+            updateRecords(makeRecord(r.page, r.text, cand, origin, r.em * k, r.weight, r.id), {r.id});
+            TLOG("record from rmpp-hwr now has its strokes (%d%s)", r.n, cand.size() < sel.size() ? ", marks left out" : "");
+            return;
+        }
+        if (glyphs.size() == sel.size()) return;
     }
 }
 
@@ -145,17 +165,42 @@ void watchSelection() {
 QElapsedTimer g_lastDoubleTap;
 
 // The selection is exactly whole text objects: those objects (else empty).
-QList<Placement> selectedObjects(const PageObjects &po, const QList<QRect> &sel, bool *onlyObjects = nullptr) {
-    QHash<QString, int> selCount;
-    for (const QRect &r : sel) selCount[rectKey(r)]++;
+// A mark on object p (highlight, underline): not one of its strokes, at least 1.5 em long, wider than tall, and
+// mostly (80%) on the object.
+bool isMark(const PageObjects &po, const Placement &p, int i) {
+    if (p.members.contains(i)) return false;
+    const QRect &r = po.rects[i];
+    const double em = po.recs[p.rec].em * p.k;
+    if (r.width() < 1.5 * em || r.width() < 1.5 * r.height()) return false;
+    const QRectF on = QRectF(r).intersected(p.box.adjusted(-0.25 * em, -0.25 * em, 0.25 * em, 0.25 * em));
+    return on.width() * on.height() >= 0.8 * r.width() * r.height();
+}
+
+// The whole text objects in the selection. onlyObjects: the selection is those objects and marks on them, nothing
+// else. other: the page strokes selected that are neither.
+QList<Placement> selectedObjects(const PageObjects &po, const QList<QRect> &sel, bool *onlyObjects = nullptr,
+                                 QList<int> *other = nullptr, QList<int> *marks = nullptr) {
+    QSet<QString> keys;
+    for (const QRect &r : sel) keys.insert(rectKey(r));
+    QSet<int> selIdx;
+    for (int i = 0; i < po.rects.size(); ++i) if (keys.contains(rectKey(po.rects[i]))) selIdx.insert(i);
     QList<Placement> out;
-    int covered = 0;
+    QSet<int> covered;
     for (const Placement &p : po.found) {
         int in = 0;
-        for (int m : p.members) if (selCount.contains(rectKey(po.rects[m]))) ++in;
-        if (in == p.matched) { out << p; covered += p.matched; }
+        for (int m : p.members) if (selIdx.contains(m)) ++in;
+        if (in == p.matched) { out << p; for (int m : p.members) covered.insert(m); }
     }
-    if (onlyObjects) *onlyObjects = !out.isEmpty() && covered == sel.size();
+    QList<int> rest, mk;
+    for (int i : selIdx) {
+        if (covered.contains(i)) continue;
+        bool mark = false;
+        for (const Placement &p : out) if (isMark(po, p, i)) mark = true;
+        (mark ? mk : rest) << i;
+    }
+    if (onlyObjects) *onlyObjects = !out.isEmpty() && rest.isEmpty();
+    if (other) *other = rest;
+    if (marks) *marks = mk;
     return out;
 }
 
@@ -173,9 +218,10 @@ void editSelectedObjects() {
     upgradeLegacy(sc, dv->property("currentPageId").toString(), sel);
     const PageObjects po = findObjects(sc, dv->property("currentPageId").toString(), true);
     bool only = false;
-    const QList<Placement> objs = selectedObjects(po, sel, &only);
+    QList<int> marks;
+    const QList<Placement> objs = selectedObjects(po, sel, &only, nullptr, &marks);
     if (!only) { TLOG("double tap: the selection is not (only) text objects"); return; }
-    openObjectEdit(dv, sc, ph, po, objs);
+    openObjectEdit(dv, sc, ph, po, objs, int(marks.size()));
 }
 
 // xochitl's selection handler areas emit doubleClicked on a double tap on the selection (pen and finger).
@@ -249,16 +295,30 @@ void doubleTapAt(double x, double y) {
     if (!sel.isEmpty()) {
         bool only = false;
         const QList<Placement> objs = selectedObjects(po, sel, &only);
-        for (const Placement &p : objs)
-            if (p.rec == hit->rec && p.d == hit->d) { editSelectedObjects(); return; }
+        for (const Placement &p : objs)   // selected with nothing but objects and their marks: edit
+            if (p.rec == hit->rec && p.d == hit->d && only) { editSelectedObjects(); return; }
     }
+    // not selected, or selected with other handwriting: select this object alone
     g_lastDoubleTap.start();
     TLOG("double tap: selecting a text object (%d strokes)", hit->matched);
     endSelection(sc, dv);
     QPointer<QObject> scp(sc);
+    QPointer<QQuickItem> dvp(dv);
     const QList<QRect> rects = po.rects;
     const QList<int> members = hit->members;
-    QTimer::singleShot(250, sc, [scp, rects, members] { setSelection(scp, rects, members); });
+    QTimer::singleShot(250, sc, [scp, dvp, rects, members, pageId] {
+        setSelection(scp, rects, members, [scp, dvp, pageId] {
+            // a stroke drawn across the object encloses some of its strokes and cannot be left out: editing would
+            // delete it too, so say so (the edit needs the object alone, or with its marks)
+            if (!scp || !dvp) return;
+            const PageObjects po2 = findObjects(scp, pageId, true);
+            QList<int> other;
+            bool only = false;
+            selectedObjects(po2, lineRects(scp), &only, &other);
+            if (!other.isEmpty())
+                showHint(dvp, QStringLiteral("Handwriting over this text object is selected with it. Move it off to edit the text."));
+        });
+    });
 }
 
 // ---- rule 3: erased objects become plain strokes ----

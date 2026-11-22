@@ -13,6 +13,11 @@ On the tablet:
 - **Always whole**: a lasso that covers part of a text object selects all of it (at least half of its strokes
   inside) or none of it, so moving, deleting and copying act on whole objects. A pasted copy is a text object too.
   Erasing part of an object turns it into plain strokes.
+- **With highlights and handwriting**: a highlight or underline drawn on a text object goes with it (selected with
+  it, never recognized as handwriting); editing the text redraws it without the highlight. Other handwriting stays
+  separate: a lasso takes text objects (whole) and handwriting together as usual; with handwriting in the selection
+  a double tap selects the tapped object alone, and another double tap edits it. Handwriting drawn across an object
+  cannot be left out of its selection; the object can be edited once it is moved off.
 - **Handwriting to text objects**: [rmpp-hwr](https://github.com/lorancecall/rmpp-hwr) recognizes lasso-selected
   handwriting and hands the text to rmpp-textobj (its text object mode).
 

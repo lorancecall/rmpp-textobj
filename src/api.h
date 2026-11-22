@@ -100,9 +100,10 @@ RMPP_TEXTOBJ_API int rmpp_textobj_edit_selection(void) {
     if (sel.isEmpty()) return 0;
     const PageObjects po = findObjects(p.sc, p.pageId, true);
     bool only = false;
-    const QList<Placement> objs = selectedObjects(po, sel, &only);
+    QList<int> marks;
+    const QList<Placement> objs = selectedObjects(po, sel, &only, nullptr, &marks);
     if (!only) return 0;
-    openObjectEdit(p.dv, p.sc, p.ph, po, objs);
+    openObjectEdit(p.dv, p.sc, p.ph, po, objs, int(marks.size()));
     return g_edit.box ? 1 : 0;
 }
 
@@ -114,9 +115,11 @@ RMPP_TEXTOBJ_API int rmpp_textobj_drop_objects_from_selection(void) {
     const PageObjects po = findObjects(p.sc, p.pageId, true);
     QSet<QString> selected;
     for (const QRect &r : sel) selected.insert(rectKey(r));
-    QList<int> drop;
+    QList<int> drop, marks;
+    selectedObjects(po, sel, nullptr, nullptr, &marks);
     for (const Placement &p2 : po.found)
         for (int m : p2.members) if (selected.contains(rectKey(po.rects[m]))) drop << m;
+    drop << marks;   // marks on the objects are not handwriting to recognize either
     dropFromSelection(p.sc, po.rects, drop, selected);
     return int(drop.size());
 }

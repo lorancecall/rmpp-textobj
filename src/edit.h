@@ -191,6 +191,7 @@ struct InkEdit {
     QString text0;                // the object's text when the box opened (edit)
     int weight0 = 1;
     QStringList removeIds;        // records the edited object(s) replace
+    int marks = 0;                // highlights / underlines on the edited object(s): deleted with them
 };
 InkEdit g_edit;
 
@@ -258,7 +259,7 @@ void showInkEditBox(QQuickItem *dv, InkEdit e, const QString &title, const QStri
 
 // Edit the selected object(s) (found on the page as `found` placements of po): one object -> its text; several ->
 // their texts top to bottom in one box, drawn as one object at the first one's place.
-void openObjectEdit(QQuickItem *dv, QObject *sc, QObject *ph, const PageObjects &po, QList<Placement> objs) {
+void openObjectEdit(QQuickItem *dv, QObject *sc, QObject *ph, const PageObjects &po, QList<Placement> objs, int marks = 0) {
     if (objs.isEmpty() || g_edit.box) return;
     std::sort(objs.begin(), objs.end(), [](const Placement &a, const Placement &b) { return a.box.top() < b.box.top(); });
     const QString pageId = dv->property("currentPageId").toString();
@@ -279,6 +280,7 @@ void openObjectEdit(QQuickItem *dv, QObject *sc, QObject *ph, const PageObjects 
         if (copies <= 1 && r.page == pageId && !e.removeIds.contains(r.id)) e.removeIds << r.id;
     }
     e.text0 = objs.size() == 1 ? first.text : QString();
+    e.marks = marks;
     e.weight0 = first.weight;
     TLOG("edit: %lld object(s)", (long long)objs.size());
     showInkEditBox(dv, e, objs.size() == 1 ? QStringLiteral("Edit text") : QStringLiteral("Edit text (objects joined)"),
@@ -327,6 +329,7 @@ bool applyInkEdit(const InkEdit &e) {
         return true;
     }
     putInk(e.sc, e.ph, e.dv, e.layer, true, pl, text, e.removeIds, true);
+    if (e.marks > 0) showHint(e.dv, QStringLiteral("The highlight on the text was removed with the old text. Highlight it again if you like."), 5000);
     return true;
 }
 

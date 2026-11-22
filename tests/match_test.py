@@ -46,6 +46,8 @@ def rects_of(strokes, em, scale=1.0, dx=0.0, dy=0.0, width=None):
 
 # ---- port of src/objects.h ----
 class Rec:
+    em = 40
+
     def __init__(self, page, text, rects, n=None):
         bx = min(r[0] for r in rects); by = min(r[1] for r in rects)
         bx2 = max(r[0] + r[2] for r in rects); by2 = max(r[1] + r[3] for r in rects)
@@ -223,6 +225,36 @@ def erased(rec, ri, page_rects, page):
     return not full and partial is not None and max(2, (rec.n + 1) // 2) <= partial["matched"] < rec.n
 
 
+def is_mark(recs, page_rects, p, i):
+    """Port of select.h isMark: a highlight / underline on object p."""
+    if i in p["members"]:
+        return False
+    r = page_rects[i]
+    em = recs[p["rec"]].em * p["k"]
+    if r[2] < 1.5 * em or r[2] < 1.5 * r[3]:
+        return False
+    bx, by, bw, bh = p["box"]
+    m = 0.25 * em
+    ix = max(0, min(r[0] + r[2], bx + bw + m) - max(r[0], bx - m))
+    iy = max(0, min(r[1] + r[3], by + bh + m) - max(r[1], by - m))
+    return ix * iy >= 0.8 * r[2] * r[3]
+
+
+def selected_objects(recs, page_rects, found, sel_idx):
+    """Port of select.h selectedObjects: (objects, only, other, marks)."""
+    out, covered = [], set()
+    for p in found:
+        if all(m in sel_idx for m in p["members"]):
+            out.append(p)
+            covered.update(p["members"])
+    rest, marks = [], []
+    for i in sel_idx:
+        if i in covered:
+            continue
+        (marks if any(is_mark(recs, page_rects, p, i) for p in out) else rest).append(i)
+    return out, bool(out) and not rest, rest, marks
+
+
 # ---- tests ----
 FAILS = []
 
@@ -322,6 +354,25 @@ def main():
     check("one stroke cut by the eraser: record dropped", erased(rec, 0, other + split, "P"))
     check("whole object deleted: record kept", not erased(rec, 0, other, "P"))
     check("intact object: record kept", not erased(rec, 0, page, "P"))
+
+
+    # 11. a highlight over the object: still found; object + highlight = only objects; other handwriting is not
+    bx, by = rec_box(made)
+    hl = (bx - 4, by + 6, rec.w + 8, int(em * 0.7))                  # highlighter band over the line
+    under = (bx, by + rec.h + 2, int(rec.w * 0.8), 6)                # underline just below it
+    note = (bx + 40, by + 10, 18, 22)                                # a handwritten letter on it
+    page2 = other + made + [hl, under, note]
+    f = find_objects([rec], page2, "P")
+    check("highlighted object still found", len(f) == 1)
+    hi, ui, ni = len(page2) - 3, len(page2) - 2, len(page2) - 1
+    objs, only, rest, marks = selected_objects([rec], page2, f, set(f[0]["members"]) | {hi, ui})
+    check("object + highlight + underline: only objects (2 marks)", only and sorted(marks) == [hi, ui])
+    objs, only, rest, marks = selected_objects([rec], page2, f, set(f[0]["members"]) | {hi, ni})
+    check("object + handwritten letter on it: not only objects", not only and rest == [ni])
+    far = (bx + rec.w + 300, by, 200, 30)                            # a wide stroke elsewhere
+    page3 = page2 + [far]
+    objs, only, rest, marks = selected_objects([rec], page3, f, set(f[0]["members"]) | {len(page3) - 1})
+    check("object + a wide stroke elsewhere: not a mark", not only)
 
     # 10. timing: a page with 2,000 strokes and 50 objects
     import time
