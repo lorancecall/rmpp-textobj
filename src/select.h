@@ -271,8 +271,19 @@ import QtQuick
 Item {
     id: tapArea
     property bool active: false
+    property var menu: null   // xochitl's selection menu (cut / copy / convert / delete), set from C++
     anchors.fill: parent
     z: 5
+    // The menu's buttons keep their taps: over them this item does not contain the point, so the handler leaves
+    // pen and finger alone there (a handler over the whole page kept the pen's taps from the menu).
+    containmentMask: QtObject {
+        function contains(p) {
+            const m = tapArea.menu
+            if (!m || !m.visible) return true
+            const q = tapArea.mapToItem(m, p.x, p.y)
+            return !(q.x >= 0 && q.y >= 0 && q.x < m.width && q.y < m.height)
+        }
+    }
     TapHandler {
         enabled: tapArea.active
         gesturePolicy: TapHandler.DragThreshold
@@ -291,6 +302,10 @@ void installTapOverlay() {
         g_tapOverlay = createWithState(dv, kTapQml, "TapArea");
     }
     if (g_tapOverlay) {
+        static QPointer<QQuickItem> menu;   // made with the first selection
+        if (!menu) menu = findAnywhere([](QQuickItem *i) { return i->objectName() == QLatin1String("selectionHandlerMenu"); });
+        if (menu && g_tapOverlay->property("menu").value<QObject *>() != menu.data())
+            g_tapOverlay->setProperty("menu", QVariant::fromValue<QObject *>(menu.data()));
         const bool on = selectionToolActive() && !g_edit.box;
         if (g_tapOverlay->property("active").toBool() != on) g_tapOverlay->setProperty("active", on);
     }
