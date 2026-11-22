@@ -3,6 +3,12 @@
 **Text objects for the reMarkable Paper Pro**: typed text drawn as ordinary pen strokes in a clean stroke font, that
 you can move, resize, copy and erase like handwriting, and edit as text with a double tap.
 
+> Part of the **rmpp add-ons**, built on [rmpp-packages](https://github.com/lorancecall/rmpp-packages): it is
+> installed by rmpp setup, loaded into xochitl at every boot by rmpp-preload (no xovi), and kept up to date with
+> Vellum. How that differs from xovi: [how it works](https://github.com/lorancecall/rmpp-packages/blob/main/docs/how-it-works.md).
+>
+> Status: experimental.
+
 On the tablet:
 
 - **Add text object** (T tool menu, under "Add text"): tap where the text goes, type, OK. The new object is selected
@@ -32,8 +38,15 @@ space only (`glyphs.json`). Text with characters that no installed glyph file ha
 edit box names the characters and OK stays off until they are removed or their language is added (Settings >
 Languages).
 
-> Status: experimental. Install with Vellum from [rmpp-packages](https://github.com/lorancecall/rmpp-packages)
-> (`vellum add rmpp-textobj`); it needs `rmpp-preload` and `rmpp-lang`.
+## Install
+
+- Install **rmpp setup** (desktop app or one-line script) from
+  [rmpp-packages](https://github.com/lorancecall/rmpp-packages#install) and tick **rmpp-textobj** (not preselected),
+  with the **rmpp-lang** language add-ons whose glyphs you need (Korean, Japanese, Chinese, ...). Developer mode is
+  needed: the rmpp-packages page explains it.
+- After a reMarkable OS update: **Restore** in rmpp setup.
+- Other ways (Vellum on the command line, building and installing it yourself) and removal:
+  [docs/install.md](docs/install.md).
 
 ## How it works
 
@@ -56,10 +69,9 @@ Languages).
 
 ## Build
 
-Needs the Arm GNU aarch64 toolchain and Qt 6.10 headers/device libraries in `../sdk` (as for rmpp-hwr):
-`./build.sh` -> `build/librmpp-textobj-ui.so`. The ASCII glyphs: `python tools/glyphs.py build --font
-NotoSansKR-Regular.ttf -o data/glyphs.json` (centre lines of Noto Sans KR; the same method rmpp-lang uses for the
-language files).
+`./build.sh` (Arm GNU aarch64 toolchain and Qt 6.10 in `../sdk`); the ASCII glyphs are centre lines of Noto Sans KR
+(`tools/glyphs.py`, the same method rmpp-lang uses for the language files). Details, tests and trying a build on the
+tablet: [docs/install.md](docs/install.md#building-and-installing-it-yourself-developers).
 
 ## License
 
