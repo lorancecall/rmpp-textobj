@@ -74,8 +74,10 @@ void loadSettings() {
     if (em <= 0) em = QSettings(QStringLiteral("/home/root/.config/rmpp-hwr/settings.conf"), QSettings::IniFormat)
                           .value(QStringLiteral("addTextEm"), 0.0).toDouble();   // rmpp-hwr 0.4 test builds kept it
     g_state->insert(QStringLiteral("addTextEm"), em);
-    // highlighter strokes on text objects are replaced by bands snapped to the characters (src/highlight.h)
-    g_state->insert(QStringLiteral("snapHighlights"), s.value(QStringLiteral("snapHighlights"), true).toBool());
+    // highlighter strokes on text objects are replaced by bands snapped to the characters (src/highlight.h).
+    // Off by default: selecting the highlighter stroke alone over the glyphs fails on the device (OS 3.29.1);
+    // the highlight is still recorded and drawn as bands after an edit. v0.2: issue #3 (own layer).
+    g_state->insert(QStringLiteral("snapHighlights"), s.value(QStringLiteral("snapHighlights"), false).toBool());
 }
 
 void saveSetting(const QString &key, const QVariant &v) {

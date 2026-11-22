@@ -8,12 +8,12 @@
 - **Always whole**: a lasso that covers part of a text object selects all of it (at least half of its strokes
   inside) or none of it, so moving, deleting and copying act on whole objects. A pasted copy is a text object too.
   Erasing part of an object turns it into plain strokes.
-- **Highlights**: the highlighter on a text object snaps to its characters as on typed text: the stroke is replaced
-  by a band as high as the line and as wide as the characters it covers, in the same colour. The highlight is kept
-  with the object: it moves and is copied with it, and editing the text draws it again on the same characters
-  (text inserted before it moves it; its text deleted removes it). Erasing the band removes the highlight.
-  Highlights drawn before this version come back yellow after an edit. Snapping can be turned off with
-  `snapHighlights=false` in `~/.config/rmpp-textobj/settings.conf` (the highlight is still kept).
+- **Highlights**: a highlighter stroke on a text object is kept with the object, with the characters it covers and
+  its colour: it moves and is copied with it, and editing the text draws it again on the same characters as a band
+  as high as the line (text inserted before it moves it; its text deleted removes it). Erasing the band removes the
+  highlight. Highlights drawn before this version come back yellow after an edit. The stroke stays as drawn until
+  the next edit; snapping it to the characters right away (`snapHighlights=true` in
+  `~/.config/rmpp-textobj/settings.conf`) is experimental and does not work on the device yet.
 - **With handwriting**: an underline drawn on a text object goes with it (selected with it, never recognized as
   handwriting); editing the text removes it. Other handwriting stays separate: a lasso takes text objects (whole) and handwriting
   together as usual; with handwriting in the selection a double tap selects the tapped object alone, and another double tap edits it. Handwriting drawn across an object
