@@ -41,9 +41,9 @@ Languages).
 ## Install
 
 - Install **rmpp setup** (desktop app or one-line script) from
-  [rmpp-packages](https://github.com/lorancecall/rmpp-packages#install) and tick **rmpp-textobj** (not preselected),
-  with the **rmpp-lang** language add-ons whose glyphs you need (Korean, Japanese, Chinese, ...). Developer mode is
-  needed: the rmpp-packages page explains it.
+  [rmpp-packages](https://github.com/lorancecall/rmpp-packages#install) and tick **rmpp-textobj** (not preselected;
+  it also comes with **rmpp-hwr**), with the **rmpp-lang** language add-ons whose glyphs you need (Korean, Japanese,
+  Chinese, ...). Developer mode is needed: the rmpp-packages page explains it.
 - After a reMarkable OS update: **Restore** in rmpp setup.
 - Other ways (Vellum on the command line, building and installing it yourself) and removal:
   [docs/install.md](docs/install.md).
