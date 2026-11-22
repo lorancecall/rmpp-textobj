@@ -23,8 +23,20 @@ bool adjusting() { return g_adjusting && g_adjustStarted.isValid() && g_adjustSt
 
 QString rectKey(const QRect &r) { return QStringLiteral("%1,%2,%3,%4").arg(r.x()).arg(r.y()).arg(r.width()).arg(r.height()); }
 
+// Subtracts the rects from the selection one after another, 60 ms apart (many calls in a row: most of them were
+// lost on the device), then runs done.
+void subtractRects(QPointer<QObject> scp, const QList<QRect> &rs, int i, std::function<void()> done) {
+    if (!scp) { if (done) done(); return; }
+    if (i >= rs.size()) { if (done) done(); return; }
+    selectRect(scp, rs[i], 1);
+    QTimer::singleShot(60, scp, [scp, rs, i, done] { subtractRects(scp, rs, i + 1, done); });
+}
+
 // Makes the selection hold exactly the page strokes `want` (indices into rects). Asynchronous (the selection
 // updates after a moment); done() runs after it.
+// The selection starts as the box around the wanted strokes. Strokes that do not belong go out by subtraction
+// (a stroke leaves only when it lies wholly in the subtracted rect). For one wanted stroke (a highlight over
+// glyphs), four strips of its box that each miss one of its edges take out all that lies inside it first.
 void setSelection(QPointer<QObject> scp, const QList<QRect> &rects, const QList<int> &want, std::function<void()> done = {}) {
     if (!scp || want.isEmpty()) return;
     g_adjusting = true;
@@ -34,9 +46,18 @@ void setSelection(QPointer<QObject> scp, const QList<QRect> &rects, const QList<
     for (int i : want) { wr << rects[i]; wantKeys.insert(rectKey(rects[i])); }
     const QRect box = unite(wr).adjusted(-1, -1, 1, 1);
     selectRect(scp, box, 0);
-    QTimer::singleShot(350, scp, [scp, wantKeys, done] {
+    auto finish = [scp, done](int out, int kept) {
+        QTimer::singleShot(350, scp, [scp, out, kept, done] {
+            if (scp) TLOG("selection set: %d strokes (%d taken out, %d kept)", scp->property("selectionItemCount").toInt(), out, kept);
+            if (done) done();
+            QTimer::singleShot(300, qApp, [] { g_adjusting = false; });
+        });
+    };
+    // the pass over what is still selected and does not belong, stroke by stroke
+    auto strokePass = [scp, wantKeys, finish] {
         if (!scp) { g_adjusting = false; return; }
         int out = 0, kept = 0;
+        QList<QRect> sub;
         const QList<QRect> cur = lineRects(scp);
         for (const QRect &r : cur) {
             if (wantKeys.contains(rectKey(r))) continue;
@@ -46,14 +67,18 @@ void setSelection(QPointer<QObject> scp, const QList<QRect> &rects, const QList<
             const QRect ra = r.adjusted(-1, -1, 1, 1);   // rounded rects: 1 unit bigger to take the stroke out
             for (const QRect &in : cur) if (wantKeys.contains(rectKey(in)) && ra.contains(in)) encloses = true;
             if (encloses) { ++kept; continue; }
-            selectRect(scp, ra, 1);
+            sub << ra;
             ++out;
         }
-        QTimer::singleShot(350, scp, [scp, out, kept, done] {
-            if (scp) TLOG("selection set: %d strokes (%d taken out, %d kept)", scp->property("selectionItemCount").toInt(), out, kept);
-            if (done) done();
-            QTimer::singleShot(300, qApp, [] { g_adjusting = false; });
-        });
+        subtractRects(scp, sub, 0, [finish, out, kept] { finish(out, kept); });
+    };
+    QTimer::singleShot(350, scp, [scp, wr, strokePass] {
+        if (!scp) { g_adjusting = false; return; }
+        if (wr.size() != 1) { strokePass(); return; }
+        const QRect w = wr.first();
+        const QList<QRect> strips = {w.adjusted(-1, 2, 1, 1), w.adjusted(-1, -1, 1, -2), w.adjusted(2, -1, 1, 1),
+                                     w.adjusted(-1, -1, -2, 1)};
+        subtractRects(scp, strips, 0, [scp, strokePass] { QTimer::singleShot(300, scp, strokePass); });
     });
 }
 
@@ -82,19 +107,18 @@ void dropFromSelection(QPointer<QObject> scp, const QList<QRect> &rects, const Q
     const QRect box = unite(dr).adjusted(-1, -1, 1, 1);
     bool inside = false;
     for (const QRect &r : stay) if (box.contains(r)) inside = true;
-    int out = 0;
-    if (!inside) { selectRect(scp, box, 1); out = int(drop.size()); }
+    QList<QRect> sub;
+    if (!inside) sub << box;
     else for (int i : drop) {
         // the reported rects are rounded: a stroke is only taken out by a rect 1 unit bigger
         const QRect ri = rects[i].adjusted(-1, -1, 1, 1);
         bool other = false;   // a stroke that stays inside its rect would go out with it
         for (const QRect &r : stay) if (ri.contains(r)) other = true;
         if (other) continue;
-        selectRect(scp, ri, 1);
-        ++out;
+        sub << ri;
     }
-    TLOG("lasso: %d stroke(s) of text objects taken out of the selection", out);
-    QTimer::singleShot(600, qApp, [] { g_adjusting = false; });
+    TLOG("lasso: %lld stroke(s) of text objects taken out of the selection", (long long)(inside ? sub.size() : drop.size()));
+    subtractRects(scp, sub, 0, [] { QTimer::singleShot(600, qApp, [] { g_adjusting = false; }); });
 }
 
 // A legacy record (rmpp-hwr, no rects) whose strokes are exactly the selection: give it its rects now.
