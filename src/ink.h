@@ -265,8 +265,19 @@ QList<QRect> lineRects(QObject *sc, const QRect *area = nullptr) {
     return out;
 }
 
-// Every stroke of the open page.
+// Every stroke of the open page. An area query leaves out the selected strokes (seen on the device, OS 3.29), so
+// the selection's own rects are added.
 QList<QRect> pageLineRects(QObject *sc) {
     const QRect all(-20000, -20000, 40000, 80000);
-    return lineRects(sc, &all);
+    QList<QRect> out = lineRects(sc, &all);
+    // only with a selection: asking for the selection's rects while a page is still loading crashed xochitl twice
+    // (SEGV right after "Lookup of layer idx failed")
+    if (sc->property("selectionItemCount").toInt() <= 0) return out;
+    const QList<QRect> sel = lineRects(sc);
+    if (sel.isEmpty()) return out;
+    QSet<QString> have;
+    auto key = [](const QRect &r) { return QStringLiteral("%1,%2,%3,%4").arg(r.x()).arg(r.y()).arg(r.width()).arg(r.height()); };
+    for (const QRect &r : out) have.insert(key(r));
+    for (const QRect &r : sel) if (!have.contains(key(r))) out << r;
+    return out;
 }

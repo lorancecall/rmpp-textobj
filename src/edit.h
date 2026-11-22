@@ -353,6 +353,7 @@ bool applyInkEdit(const InkEdit &e) {
     if (blankText(text)) {
         if (!e.create) {   // empty (or only spaces): the object is deleted, strokes and record
             QMetaObject::invokeMethod(e.sc, "deleteSelectedItems", Q_ARG(int, e.layer));
+            endSelection(e.sc, e.dv);   // else the selection frame and its image stay on screen (device, OS 3.29)
             updateRecords({}, e.removeIds);
         }
         return false;

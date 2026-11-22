@@ -37,13 +37,16 @@ void setSelection(QPointer<QObject> scp, const QList<QRect> &rects, const QList<
     QTimer::singleShot(350, scp, [scp, wantKeys, done] {
         if (!scp) { g_adjusting = false; return; }
         int out = 0, kept = 0;
-        for (const QRect &r : lineRects(scp)) {
+        const QList<QRect> cur = lineRects(scp);
+        for (const QRect &r : cur) {
             if (wantKeys.contains(rectKey(r))) continue;
-            // take it out only if nothing wanted lies inside its rect (that would go out with it)
+            // take it out only if nothing wanted lies inside its rect (that would go out with it); decided from
+            // the rects, as an area query leaves out selected strokes
             bool encloses = false;
-            for (const QRect &in : lineRects(scp, &r)) if (wantKeys.contains(rectKey(in))) encloses = true;
+            const QRect ra = r.adjusted(-1, -1, 1, 1);   // rounded rects: 1 unit bigger to take the stroke out
+            for (const QRect &in : cur) if (wantKeys.contains(rectKey(in)) && ra.contains(in)) encloses = true;
             if (encloses) { ++kept; continue; }
-            selectRect(scp, r, 1);
+            selectRect(scp, ra, 1);
             ++out;
         }
         QTimer::singleShot(350, scp, [scp, out, kept, done] {
@@ -61,14 +64,33 @@ void dropFromSelection(QPointer<QObject> scp, const QList<QRect> &rects, const Q
     g_adjustStarted.start();
     QSet<QString> dropKeys;
     for (int i : drop) dropKeys.insert(rectKey(rects[i]));
+    // The selected strokes that stay. (An area query leaves out selected strokes, so this is decided from the
+    // rects, not by asking the scene what lies inside an area.)
+    QList<QRect> stay;
+    for (const QRect &r : rects) if (selected.contains(rectKey(r)) && !dropKeys.contains(rectKey(r))) stay << r;
+    if (stay.isEmpty()) {   // nothing else selected: end the selection
+        QQuickItem *dv = documentView();
+        endSelection(scp, dv);
+        TLOG("lasso: only part of a text object: selection ended");
+        QTimer::singleShot(600, qApp, [] { g_adjusting = false; });
+        return;
+    }
+    // One subtraction over all of them when no stroke that stays lies inside (many quick ones get lost on the
+    // device); else stroke by stroke.
+    QList<QRect> dr;
+    for (int i : drop) dr << rects[i];
+    const QRect box = unite(dr).adjusted(-1, -1, 1, 1);
+    bool inside = false;
+    for (const QRect &r : stay) if (box.contains(r)) inside = true;
     int out = 0;
-    for (int i : drop) {
-        // inside its rect only strokes that go out too, or that are not selected (mode 1 leaves those alone)
-        bool other = false;
-        for (const QRect &in : lineRects(scp, &rects[i]))
-            if (!dropKeys.contains(rectKey(in)) && selected.contains(rectKey(in))) other = true;
+    if (!inside) { selectRect(scp, box, 1); out = int(drop.size()); }
+    else for (int i : drop) {
+        // the reported rects are rounded: a stroke is only taken out by a rect 1 unit bigger
+        const QRect ri = rects[i].adjusted(-1, -1, 1, 1);
+        bool other = false;   // a stroke that stays inside its rect would go out with it
+        for (const QRect &r : stay) if (ri.contains(r)) other = true;
         if (other) continue;
-        selectRect(scp, rects[i], 1);
+        selectRect(scp, ri, 1);
         ++out;
     }
     TLOG("lasso: %d stroke(s) of text objects taken out of the selection", out);
