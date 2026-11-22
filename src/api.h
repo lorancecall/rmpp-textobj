@@ -64,7 +64,7 @@ QString objectLines(const PageObjects &po, QList<Placement> objs) {
         const double em = r.em * p.k;
         const QStringList lines = r.text.split(QLatin1Char('\n'));
         for (int i = 0; i < lines.size(); ++i) {
-            if (lines[i].trimmed().isEmpty()) continue;
+            if (blankText(lines[i])) continue;
             const double y = o.y() + i * em * 1.15;
             out += QStringLiteral("%1 %2 %3 %4\t%5\n").arg(o.x()).arg(y).arg(qMax(o.x() + em, p.box.right())).arg(y + em).arg(lines[i]);
         }
@@ -134,7 +134,9 @@ RMPP_TEXTOBJ_API int rmpp_textobj_put_lines(const char *lines, double left, doub
     g_langHint = QString::fromUtf8(lang ? lang : "");
     const QStringList ls = QString::fromUtf8(lines ? lines : "").split(QLatin1Char('\n'), Qt::SkipEmptyParts);
     QStringList texts;
-    for (const QString &l : ls) texts << l.section(QLatin1Char('\t'), 1);
+    for (const QString &l : ls)
+        if (!blankText(l.section(QLatin1Char('\t'), 1))) texts << l.section(QLatin1Char('\t'), 1);
+    if (texts.isEmpty()) return 0;   // nothing but blanks: no object
     const QString missing = missingGlyphs(texts.join(QLatin1Char(' ')));
     if (!missing.isEmpty()) {
         showHint(p.dv, QStringLiteral("No glyphs for: %1. Add the language in Settings > Languages.").arg(missing));

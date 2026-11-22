@@ -25,20 +25,30 @@ void writeRecords(const QJsonArray &a) {
     }
 }
 
+// A record that is no object: blank text (nothing to draw: there are no strokes for it) or no strokes.
+bool emptyRecord(const QJsonObject &o) {
+    return blankText(o.value(QStringLiteral("text")).toString()) || o.value(QStringLiteral("n")).toInt() <= 0;
+}
+
 // The records; the first time, rmpp-hwr's ink.json is taken over (each record gets an id; the old file stays).
+// Empty records (left by earlier builds, if any) are dropped on the way.
 QJsonArray readRecords() {
     QFile f(recordsPath());
-    if (f.open(QIODevice::ReadOnly)) return QJsonDocument::fromJson(f.readAll()).array();
+    const bool own = f.open(QIODevice::ReadOnly);
     QFile old{QLatin1String(kOldRecords)};
-    if (!old.open(QIODevice::ReadOnly)) return {};
-    QJsonArray a = QJsonDocument::fromJson(old.readAll()).array(), out;
+    if (!own && !old.open(QIODevice::ReadOnly)) return {};
+    const QJsonArray a = QJsonDocument::fromJson(own ? f.readAll() : old.readAll()).array();
+    QJsonArray out;
+    int empty = 0;
     for (const QJsonValue &v : a) {
         QJsonObject o = v.toObject();
-        o.insert(QStringLiteral("id"), newRecordId());
+        if (emptyRecord(o)) { ++empty; continue; }
+        if (!own) o.insert(QStringLiteral("id"), newRecordId());
         out.append(o);
     }
-    writeRecords(out);
-    TLOG("took over %lld records from rmpp-hwr's ink.json", (long long)out.size());
+    if (!own || empty > 0) writeRecords(out);
+    if (!own) TLOG("took over %lld records from rmpp-hwr's ink.json", (long long)out.size());
+    if (empty > 0) TLOG("%d empty record(s) dropped", empty);
     return out;
 }
 

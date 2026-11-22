@@ -300,8 +300,8 @@ bool applyInkEdit(const InkEdit &e) {
     const double size = qBound(50, g_state->value(QStringLiteral("inkSize")).toInt(), 200) / 100.0;
     if (!e.create && !e.text0.isEmpty() && text == e.text0 && weight == e.weight0 && qFuzzyCompare(size, 1.0))
         return false;   // nothing changed
-    if (text.isEmpty()) {
-        if (!e.create) {   // empty text: the object is deleted
+    if (blankText(text)) {
+        if (!e.create) {   // empty (or only spaces): the object is deleted, strokes and record
             QMetaObject::invokeMethod(e.sc, "deleteSelectedItems", Q_ARG(int, e.layer));
             updateRecords({}, e.removeIds);
         }

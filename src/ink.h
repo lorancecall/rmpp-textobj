@@ -20,6 +20,13 @@ struct InkPt {
 #pragma pack(pop)
 static_assert(sizeof(InkPt) == 14, "Line point layout");
 
+// Text with nothing to draw: only spaces, tabs, line breaks, the full-width space (U+3000) or zero-width marks.
+bool blankText(const QString &t) {
+    for (const uint c : t.toUcs4())
+        if (!QChar::isSpace(c) && c != 0x200b && c != 0x200c && c != 0x200d && c != 0x2060 && c != 0xfeff) return false;
+    return true;
+}
+
 // One line of text in em units (x from 0, y 0 = top of the em box). Returns the width in em.
 double layoutLine(const QString &text, QList<QList<QPointF>> *out) {
     double x = 0;
@@ -125,7 +132,7 @@ Placed placeLines(const QStringList &lines, const QRectF &sel, bool replace) {
     for (const QString &l : lines) {
         const QStringList box = l.section(QLatin1Char('\t'), 0, 0).split(QLatin1Char(' '));
         const QString text = l.section(QLatin1Char('\t'), 1);
-        if (box.size() != 4 || text.isEmpty()) continue;
+        if (box.size() != 4 || blankText(text)) continue;
         const QRectF b(QPointF(box[0].toDouble(), box[1].toDouble()), QPointF(box[2].toDouble(), box[3].toDouble()));
         QList<QList<QPointF>> tmp;
         const double w = layoutLine(text, &tmp);
@@ -181,7 +188,7 @@ Placed placeText(const QString &text, const QPointF &origin, double em, double m
     for (const QString &para : text.split(QLatin1Char('\n'))) {
         const QStringList lines = maxWidth > 0 ? wrapParagraph(para, maxWidth / em) : QStringList{para};
         for (const QString &line : lines) {
-            if (!line.trimmed().isEmpty()) appendLine(&out, line, QPointF(origin.x(), y), em);
+            if (!blankText(line)) appendLine(&out, line, QPointF(origin.x(), y), em);
             y += em * 1.15;
         }
     }
