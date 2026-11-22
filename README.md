@@ -20,8 +20,7 @@ has **rmpp setup**, the installer for all rmpp add-ons.
 - In rmpp setup, tick **Text objects (beta)** (rmpp-textobj; not selected by default; it also comes with
   **Handwriting recognition (beta)**, rmpp-hwr), and the language add-ons of rmpp-lang whose glyphs you need.
 - After a reMarkable OS update: **Restore** in rmpp setup.
-- Other ways (Vellum on the command line) and removal:
-  [docs/install.md](docs/install.md).
+- Other ways and removal: [docs/install.md](docs/install.md).
 
 ## Use
 
