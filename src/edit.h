@@ -5,6 +5,9 @@ QElapsedTimer g_putStarted;
 
 bool putting() { return g_putting && g_putStarted.isValid() && g_putStarted.elapsed() < 8000; }
 
+QString rectKey(const QRect &r);   // src/select.h
+void setSelection(QPointer<QObject> scp, const QList<QRect> &rects, const QList<int> &want, std::function<void()> done);
+
 // The strokes to lasso for new ink: the glyph strokes, and the corners of its highlight bands.
 QList<QList<QPointF>> inkAndBands(const Placed &pl, const QList<Hl> &hls) {
     QList<QList<QPointF>> out = pl.strokes;
@@ -17,21 +20,38 @@ QList<QList<QPointF>> inkAndBands(const Placed &pl, const QList<Hl> &hls) {
 // `removeIds`, the object it replaces). The selection settles after a while (longer for big ink), so measure again
 // until it holds all n new strokes and the highlight bands; select again if it is still empty (slow tool switch).
 // Bands that did not come (not drawn, not selected) are left out after a few tries.
+// `before`: the page's strokes before the new ink was added. The lasso around new ink also takes strokes of an
+// object it overlaps: those are left out (and taken out of the selection).
 void recordNew(QPointer<QObject> scp, const QString &page, const QString &text, const Placed &pl, int n,
-               const QStringList &removeIds, const QList<Hl> &hls = {}, int attempt = 0) {
+               const QStringList &removeIds, const QList<Hl> &hls = {}, int attempt = 0,
+               const QSet<QString> &before = {}) {
     QTimer::singleShot(attempt == 0 ? 300 : 400, qApp, [=] {
         if (!scp) { g_putting = false; return; }
         const int nb = bandCount(hls);
         const int count = scp->property("selectionItemCount").toInt();
-        const bool full = count == n + nb, glyphsOnly = nb > 0 && count == n && attempt >= 4;
-        const QList<QRect> rects = full || glyphsOnly ? lineRects(scp) : QList<QRect>();
+        QList<QRect> rects;
+        if (count >= n) {
+            for (const QRect &r : lineRects(scp)) if (!before.contains(rectKey(r))) rects << r;
+            if (rects.size() < count && (rects.size() == n + nb || (nb > 0 && rects.size() == n && attempt >= 4))) {
+                // others came along: keep only the new ink selected
+                const QList<QRect> all = pageLineRects(scp);
+                QSet<QString> mine;
+                for (const QRect &r : rects) mine.insert(rectKey(r));
+                QList<int> want;
+                for (int i = 0; i < all.size(); ++i) if (mine.contains(rectKey(all[i]))) want << i;
+                TLOG("new ink: %lld other stroke(s) selected with it, taken out", (long long)(count - rects.size()));
+                setSelection(scp, all, want, {});
+            }
+        }
+        const bool full = rects.size() == n + nb, glyphsOnly = nb > 0 && rects.size() == n && attempt >= 4;
+        if (!full && !glyphsOnly) rects.clear();
         if (rects.size() != n + nb && !(glyphsOnly && rects.size() == n)) {
             if (count == 0 && (attempt == 1 || attempt == 3)) {
                 const bool switched = useSelectionTool();
                 TLOG("new ink not selected yet, selecting again%s", switched ? " (selection tool)" : "");
                 QTimer::singleShot(switched ? 500 : 0, scp, [scp, pl, hls] { if (scp) selectInk(scp, inkAndBands(pl, hls)); });
             }
-            if (attempt < 6) recordNew(scp, page, text, pl, n, removeIds, hls, attempt + 1);
+            if (attempt < 6) recordNew(scp, page, text, pl, n, removeIds, hls, attempt + 1, before);
             else {
                 TLOG("new ink not selected (%d of %d), not recorded: plain strokes", count, n + nb);
                 g_putting = false;
@@ -66,12 +86,14 @@ void putInk(QPointer<QObject> scp, QPointer<QObject> php, QPointer<QQuickItem> d
     else endSelection(scp, dvp);
     QTimer::singleShot(400, scp, [=] {
         if (!scp || !php) { g_putting = false; return; }
+        QSet<QString> before;
+        for (const QRect &r : pageLineRects(scp)) before.insert(rectKey(r));
         const int bands = hls.isEmpty() ? 0 : addBands(scp, hls);
         const int added = addInkStrokes(scp, php, pl.strokes, pl.em, pl.weight);
         if (added > 0) {
             selectInk(scp, inkAndBands(pl, bands > 0 ? hls : QList<Hl>()));
             recordNew(scp, dvp ? dvp->property("currentPageId").toString() : scp->property("pageId").toString(), text, pl,
-                      added, removeIds, bands > 0 ? hls : QList<Hl>());
+                      added, removeIds, bands > 0 ? hls : QList<Hl>(), 0, before);
         } else {
             g_putting = false;
             if (added < 0) showHint(dvp, QStringLiteral("rmpp-textobj: this xochitl version is not supported"));

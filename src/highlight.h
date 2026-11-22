@@ -290,7 +290,10 @@ QQuickItem *activeToolButton() {
     QQuickItem *up = sel->parentItem();
     for (int depth = 0; up && depth < 4; ++depth, up = up->parentItem()) {
         QQuickItem *f = findItem(up, [sel](QQuickItem *i) {
-            return i != sel && i->isVisible() && i->objectName().endsWith(QLatin1String("Button")) && i->property("selected").toBool();
+            // tool buttons are "...Button" (selectionButton) or "...Menu" (primaryPenMenu, secondaryPenMenu: the pens)
+            const QString n = i->objectName();
+            return i != sel && i->isVisible() && (n.endsWith(QLatin1String("Button")) || n.endsWith(QLatin1String("Menu")))
+                   && i->property("selected").toBool();
         });
         if (f) return f;
     }
