@@ -503,12 +503,29 @@ struct PageCheck {
 };
 PageCheck g_check;
 
+// Not while a page is being opened: xochitl crashed (SEGV right after "Lookup of layer idx failed") when the
+// periodic page query ran during the first second of opening a document, 5 times on 2026-11-22. A page counts as
+// settled 3 s after the scene controller or the page last changed.
+bool pageSettled(QObject *sc, const QString &pageId) {
+    static QPointer<QObject> lastSc;
+    static QString lastPage;
+    static QElapsedTimer since;
+    if (lastSc != sc || lastPage != pageId || !since.isValid()) {
+        lastSc = sc;
+        lastPage = pageId;
+        since.start();
+        return false;
+    }
+    return since.elapsed() > 3000;
+}
+
 void checkErasedObjects() {
     if (g_edit.box || putting() || adjusting()) return;
     QQuickItem *dv = documentView();
     QObject *sc = dv ? dv->property("sceneController").value<QObject *>() : nullptr;
-    if (!sc) return;
+    if (!sc || !dv->isVisible()) return;
     const QString pageId = dv->property("currentPageId").toString();
+    if (pageId.isEmpty() || !pageSettled(sc, pageId)) return;
     if (pageId != g_check.page) { g_check = PageCheck{}; g_check.page = pageId; }
     const QList<QRect> rects = pageLineRects(sc);
     QSet<QString> keys;
