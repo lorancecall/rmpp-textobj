@@ -262,6 +262,7 @@ void openObjectEdit(QQuickItem *dv, QObject *sc, QObject *ph, const PageObjects 
     if (objs.isEmpty() || g_edit.box) return;
     std::sort(objs.begin(), objs.end(), [](const Placement &a, const Placement &b) { return a.box.top() < b.box.top(); });
     const QString pageId = dv->property("currentPageId").toString();
+    g_langHint.clear();   // the text decides (a hint from an earlier conversion does not apply)
     InkEdit e;
     e.sc = sc; e.ph = ph; e.layer = sc->property("currentLayer").toInt();
     const Rec &first = po.recs[objs.first().rec];
