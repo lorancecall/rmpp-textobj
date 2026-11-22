@@ -1,0 +1,5 @@
+rmpp-textobj includes the following third-party material.
+
+data/glyphs.json (built by tools/glyphs.py; release asset)
+  Glyph centre lines derived from Noto Sans KR, Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved
+  Font Name 'Source'. SIL Open Font License 1.1; the license text is in data/OFL-NotoSansKR.txt.
