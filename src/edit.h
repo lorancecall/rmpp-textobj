@@ -16,6 +16,68 @@ QList<QList<QPointF>> inkAndBands(const Placed &pl, const QList<Hl> &hls) {
     return out;
 }
 
+// One undo step for new ink (#6). addDrawingLine makes an undo step per stroke (a conversion took ~28 undos to
+// bring the handwriting back); SceneController::cloneAddAndSelectItems adds a list of items as one step, centred on a
+// point. So, once the new ink is recorded and selected: copy it, undo the k additions, check that exactly the new
+// strokes went (else redo them and keep the ink as it is), and add the copies back in one step, where they were.
+void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k) {
+    QObject *sc = scp;
+    if (!sc || k <= 1) return;
+    const QMetaObject *mo = sc->metaObject();
+    const int clone = mo->indexOfMethod("cloneSelectedItems(int,double)");
+    const int bound = mo->indexOfMethod("getItemBoundingRect(QList<std::shared_ptr<SceneItem>>)");
+    const int add = mo->indexOfMethod("cloneAddAndSelectItems(int,QList<std::shared_ptr<SceneItem>>,double,QPointF)");
+    if (clone < 0 || bound < 0 || add < 0 || mo->indexOfMethod("undo()") < 0 || mo->indexOfMethod("redo()") < 0) return;
+    int layer = sc->property("currentLayer").toInt();
+    double scale = 1.0;
+    QList<std::shared_ptr<void>> items;
+    void *a1[] = {&items, &layer, &scale};
+    sc->qt_metacall(QMetaObject::InvokeMetaMethod, clone, a1);
+    if (items.size() != k) { TLOG("one undo step: %lld items selected, %d added: left as is", (long long)items.size(), k); return; }
+    QRectF box;
+    void *a2[] = {&box, &items};
+    sc->qt_metacall(QMetaObject::InvokeMetaMethod, bound, a2);
+    if (box.isEmpty()) return;
+    QMetaObject::invokeMethod(sc, "clearSelectedItems");
+    // undo() right after ending a selection is ignored (device, OS 3.29.1), and takes effect a moment after it is
+    // called: undo once the selection is gone, then wait until the new strokes are gone
+    auto check = std::make_shared<std::function<void(int)>>();
+    *check = [scp, before, k, items, box, layer, add, check](int tries) {
+        QObject *sc = scp;
+        if (!sc) return;
+        int fresh = 0, kept = 0;
+        QSet<QString> seen;
+        for (const QRect &r : pageLineRects(sc)) {
+            const QString key = rectKey(r);
+            if (seen.contains(key)) continue;
+            seen.insert(key);
+            if (before.contains(key)) ++kept; else ++fresh;
+        }
+        if (fresh > 0 && kept == before.size() && tries < 15) {   // not all undone yet
+            QTimer::singleShot(200, sc, [check, tries] { (*check)(tries + 1); });
+            return;
+        }
+        if (fresh != 0 || kept != before.size()) {   // not exactly the new ink undone: put everything back
+            for (int i = 0; i < k; ++i) QMetaObject::invokeMethod(sc, "redo");
+            TLOG("one undo step: the undo did not match (%d new, %d of %lld kept): redone, left as is", fresh, kept,
+                 (long long)before.size());
+            return;
+        }
+        int lay = layer;
+        QList<std::shared_ptr<void>> its = items;
+        double sc1 = 1.0;
+        QPointF centre = box.center();
+        void *a3[] = {nullptr, &lay, &its, &sc1, &centre};
+        sc->qt_metacall(QMetaObject::InvokeMetaMethod, add, a3);
+        TLOG("new ink: %d strokes in one undo step (%d checks)", k, tries + 1);
+    };
+    QTimer::singleShot(400, sc, [scp, k, check] {
+        if (!scp) return;
+        for (int i = 0; i < k; ++i) QMetaObject::invokeMethod(scp, "undo");
+        QTimer::singleShot(200, scp, [check] { (*check)(0); });
+    });
+}
+
 // After new ink is added and selected: record it from the selection's stroke rects (removing the records in
 // `removeIds`, the object it replaces). The selection settles after a while (longer for big ink), so measure again
 // until it holds all n new strokes and the highlight bands; select again if it is still empty (slow tool switch).
@@ -67,7 +129,8 @@ void recordNew(QPointer<QObject> scp, const QString &page, const QString &text, 
         }
         updateRecords(makeRecord(page, text, glyphs, pl.origin, pl.em, pl.weight, QString(), pl.lines, hlJson(found)), removeIds);
         TLOG("recorded: %d strokes, %lld highlight(s)", n, (long long)found.size());
-        QTimer::singleShot(600, qApp, [] { g_putting = false; });   // after the selection count settled
+        groupNewInk(scp, before, int(rects.size()));
+        QTimer::singleShot(3800, qApp, [] { g_putting = false; });   // after the selection settled and the ink was regrouped
     });
 }
 
