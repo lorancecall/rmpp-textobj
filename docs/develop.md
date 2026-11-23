@@ -17,6 +17,8 @@ Build, tests and trying a build on the Paper Pro: [install.md](install.md#build-
 - `src/select.h`: the selection rules (double tap, partial lasso, erased objects) and the highlight check.
 - `src/highlight.h`: highlights: which characters a highlighter stroke covers, the bands, following an edit
   (`tests/highlight_test.py` ports the geometry with unit tests).
+- `src/layer.h`: the Text objects layer (hidden selections, undo/redo through layer switches, the layers menu):
+  see [text-layer.md](text-layer.md).
 - `src/api.h`: the C API other add-ons call (rmpp-hwr): the selected objects' text, open the edit box, draw
   recognized lines as an object.
 - `tests/match_test.py`: the stroke-pattern matching ported to Python, with unit tests (`python tests/match_test.py`).
