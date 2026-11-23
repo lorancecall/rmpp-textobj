@@ -274,6 +274,7 @@ void textobjInit() {
         tryInjectAddText();
         watchSelection();
         watchDoubleTap();
+        watchUndoRedo();
         installTapOverlay();
         closeStaleInkEdit();
         closeStaleAddPlace();
