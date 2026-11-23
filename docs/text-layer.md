@@ -104,7 +104,8 @@ All in `aboutToUndoRedo` (edit.h), for every undo and redo (toolbar buttons and 
 
 1. **Ours?** Our own `undo()`/`redo()` calls are counted (each emits the signal once) and skipped.
 2. **The newest conversion on the page the step starts from:**
-   - T conversion, undo from its result (L current, L as right after it): `steps + 1` more undos right behind;
+   - T conversion, undo from its result (a layer other than T current, as right after it; never by a stored layer index:
+     undoing a conversion can remove T and move L down): `steps + 1` more undos right behind;
    - T conversion, redo from its start: `steps + 1` more redos right behind;
    - a conversion or edit on the current layer (an object on L, or an edit on T while T is current): the one-layer
      chain of #6/#15 (result -> neither -> one more step; resent only if the page did not change at all).
@@ -141,6 +142,7 @@ All in `aboutToUndoRedo` (edit.h), for every undo and redo (toolbar buttons and 
 | 5a45c7d7 | Notebook broken: lasso on open, writing went to T, Layer 1 could not be picked | Old page with T on top opened on T; the open fallback turned on the lasso and selected nothing; then every undo ran settle up to 20 steps, undoing the user's strokes and their own switch to Layer 1 | Nothing on open; settle bounded (both superseded by S') |
 | 1ae3249f | An extra step (handwriting gone, object not there yet) on redo, and on undo after more strokes | The chain waited to see the user's step before sending the rest | The rest sent right behind the user's step |
 | 1ae3249f | Pen ink went onto T when the user had picked it | Nothing kept the pen off T | Object mode |
+| a59a3c3e | Redo of a conversion took 4 presses | Undoing the conversion also removed the Text objects layer it made, so the user's layer index moved down; the redo check compared the stored index | The user's layer is any layer but T, not a stored index |
 | 6ad906ef | The tool switched to the selection tool while writing | Touches while writing (a palm, a resting finger) counted as a double tap, and the tool was switched before looking for an object | Nothing changes unless the tap is on a known object; large contacts ignored; object boxes kept across restarts |
 | a05db063 | Nothing improved: undo stopped or skipped around selections | The pair bookkeeping (where our switches sit in xochitl's unseen history) drifted with pending undos, edits in sessions and fast presses | Design (S'): no hidden switching at all |
 

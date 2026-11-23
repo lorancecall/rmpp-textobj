@@ -362,7 +362,10 @@ void userStep(bool undo, bool send) {
         if (c.page != page) continue;
         ++here;
         if (c.text >= 0) {
-            if (cur != c.home) continue;
+            // the user's layer, wherever it is: not by its index (undoing a conversion that made the Text objects
+            // layer removes it, and the user's layer moves down by one: redo then took 4 presses, a59a3c3e)
+            const int t = textLayer(sc);
+            if (t >= 0 && cur == t) continue;
             if (layerKeys(sc) != (undo ? c.lAfter : c.lBefore)) continue;
             if (send) ownUndoRedo(sc, undo);
             ownUndoRedo(sc, undo, c.steps + 1);
