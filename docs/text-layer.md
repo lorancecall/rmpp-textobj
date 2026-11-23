@@ -63,8 +63,9 @@ its name, the writing layer by the name of the last other layer the user had cur
    is then selected again by its strokes and checked; if it is not exactly the handwriting, nothing is deleted.
 2. Delete the handwriting (**A**; not for Add text object).
 3. Draw the glyph strokes, record them, take copies, undo the k strokes (checked). Add the copies to T in one step
-   (**B**) while the writing layer stays current. The object is not selected.
-4. One undo group: X + A + B.
+   (**B**) while the writing layer stays current. Then Text objects is made current (a switch, one group with the
+   conversion) and the object selected there: a selection left on a layer that is not current is never committed.
+4. One undo group: X + A + B + the switch.
 
 An edit on T (T current) is A', B' on T: one group of 2.
 
@@ -120,7 +121,9 @@ How a press is handled:
 - An undo also compares the page with the fingerprint taken after the group (page, layer names and order, current
   layer, its strokes, typed text length).
 - Unknown means a plain single step: fail-safe, the worst case is one press too many, never steps destroyed.
-- A press while something is selected only ends the selection (xochitl); the groups stay.
+- A press while something is selected only ends the selection (xochitl, probed 6 of 6); the groups stay. The toolbar
+  buttons end an unmoved selection themselves on press, so a button press is always a real step (probed 3 of 3,
+  1 of 3 without). A moved selection is left to xochitl: clearing it drops the move (probed).
 
 Removed: hidden selections, S1/S2 pairs, settle loops, the press queue, the close guard, the open fallback, stray
 moving, matching conversions by the page's strokes, every timing window.
@@ -166,7 +169,8 @@ object takes a double tap there first. Objects follow typed text like ink (stock
 
 On a fresh notebook:
 1. Write with the pen at once: ink on Layer 1.
-2. Convert handwriting: the object appears unselected; the layers menu shows Text objects below Layer 1.
+2. Convert handwriting: Text objects (below Layer 1 in the layers menu) is current, the object selected; it can be
+   moved at once.
 3. One undo: the handwriting is back (and the layer it made is gone); one redo: the object is back.
 4. Strokes, then fast undos and redos (button and gesture): one step per press past the conversion's group.
 5. Finger double tap on the object (any tool): Text objects current, selection tool, edit box.
@@ -174,7 +178,9 @@ On a fresh notebook:
    the step before them.
 7. Edit an object, choose the pen, undo: the edit and the switch in one press.
 8. Delete Text objects in the layers menu, convert again: a new one at the bottom.
-9. A tap where two objects overlap: the overlap message.
+9. A tap where two objects overlap, or on an object crossed by another on Text objects: the overlap message.
+10. Undo with the toolbar button while an object is selected: a real undo every time (`undo/redo button: the
+    selection ended first`).
 
 ## Log lines (`journalctl -u xochitl | grep rmpp-textobj`)
 

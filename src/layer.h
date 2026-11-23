@@ -303,7 +303,6 @@ void watchLayers() {
     });
     hook(sc, "rootDocumentLengthChanged()", [] { if (!putting() && g_own == 0) groupsUnknown("typed text"); });
     hook(sc, "selectionCleared()", [] {
-        g_selectionEnded.start();
         QTimer::singleShot(700, qApp, [] { QString p; if (QObject *s = pageScene(&p)) readTextBoxes(s); });
     });
     if (QObject *ph = dv->property("penHandler").value<QObject *>())

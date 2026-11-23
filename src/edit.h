@@ -39,6 +39,9 @@ void ensureTextLayer(QPointer<QObject> scp, std::function<void(bool, int)> done)
 QSet<QString> layerKeys(QObject *sc);
 void rememberTextBox(const QString &page, const QRectF &box);
 QString pageSig(QObject *sc);
+void switchLayer(QObject *sc, int to);
+int textObjectsAt(const QString &page, const QPointF &at, QRectF *box);
+void waitFor(QPointer<QObject> scp, std::function<bool()> cond, std::function<void(bool)> next, int tries);
 
 QObject *pageScene(QString *page) {
     QQuickItem *dv = documentView();
@@ -75,9 +78,15 @@ void pushGroup(QObject *sc, const QString &page, int n, bool merge) {
     TLOG("one press: a group of %d step(s)", n);
     const int idx = int(g_undoGroups.size()) - 1;
     QPointer<QObject> scp(sc);
-    QTimer::singleShot(400, qApp, [scp, idx] {
-        if (scp && idx < g_undoGroups.size() && g_undoGroups[idx].post.isEmpty()) g_undoGroups[idx].post = pageSig(scp);
-    });
+    // selected strokes are left out of the page's stroke list, so the fingerprint is taken with nothing selected (a
+    // conversion leaves its object selected; an empty fingerprint is not checked)
+    auto take = std::make_shared<std::function<void(int)>>();
+    *take = [scp, idx, take](int tries) {
+        if (!scp || idx != g_undoGroups.size() - 1 || !g_undoGroups[idx].post.isEmpty()) return;   // no longer on top
+        if (scp->property("selectionItemCount").toInt() == 0) { g_undoGroups[idx].post = pageSig(scp); return; }
+        if (tries < 150) QTimer::singleShot(400, qApp, [take, tries] { (*take)(tries + 1); });
+    };
+    QTimer::singleShot(400, qApp, [take] { (*take)(0); });
 }
 
 int g_putSteps = 0;   // steps of the action being put before its new ink is added (handwriting deleted, layer made)
@@ -147,8 +156,24 @@ void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k, cons
         void *a3[] = {nullptr, &lay, &its, &sc1, &centre};
         sc->qt_metacall(QMetaObject::InvokeMetaMethod, add, a3);
         TLOG("new ink: %d strokes in one undo step (%d checks)%s", k, tries + 1, toText ? ", on the text layer" : "");
-        if (toText) rememberTextBox(page, box);   // left selected (cloneAddAndSelectItems): the developer likes it
         pushGroup(sc, page, g_putSteps + 1, false);
+        if (toText) {
+            // cloneAddAndSelectItems leaves the object selected on the Text objects layer while the writing layer is
+            // current: xochitl never commits a move of that selection (device, f1b714c2: it jumped back). So the Text
+            // objects layer is made current (one group with the conversion: switchLayer merges) and the object
+            // selected there; choosing the pen goes back to the writing layer (layer.h toolChanged).
+            rememberTextBox(page, box);
+            QMetaObject::invokeMethod(sc, "clearSelectedItems");
+            useSelectionTool();
+            switchLayer(sc, text);
+            waitFor(scp, [scp, text] { return scp->property("currentLayer").toInt() == text; }, [scp, page, box](bool ok) {
+                if (!ok || !scp) return;
+                if (textObjectsAt(page, box.center(), nullptr) > 1) return;   // another object there: one rect takes both
+                QTimer::singleShot(150, scp, [scp, box] {
+                    if (scp) selectRect(scp, box.toAlignedRect().adjusted(-2, -2, 2, 2), 0);
+                });
+            }, 0);
+        }
     };
     QTimer::singleShot(400, sc, [scp, k, check] {
         if (!scp) return;
@@ -305,47 +330,39 @@ void putInkNow(QPointer<QObject> scp, QPointer<QObject> php, QPointer<QQuickItem
 }
 
 QElapsedTimer g_anyUserStep;   // the user's last undo or redo (select.h: undo/redo gestures are not double taps)
-QElapsedTimer g_selectionEnded;   // layer.h: selectionCleared
-
-// Every undo and redo (toolbar buttons, gestures). A press while something is selected only ends the selection in
-// xochitl: left alone, the groups stay as they are.
+// Every undo and redo (toolbar buttons, gestures).
+// - Something selected: xochitl spends the press on ending the selection (scratch probe, 6 of 6 with undo() called
+//   while selected; a selection cleared inside aboutToUndo is too late). Nothing else happens: the groups stay.
+// - The toolbar buttons end a selection themselves on press (below, watchUndoRedo), so a button press is always a
+//   real step (scratch probe, 3 of 3; without it 1 of 3).
 void aboutToUndoRedo(bool undo) {
     if (g_own > 0) return;
     g_anyUserStep.start();
     QString page;
     QObject *sc = pageScene(&page);
     if (!sc) return;
-    const bool selected = sc->property("selectionItemCount").toInt() > 0;
-    // a press while something is selected, or right after a selection ended (the toolbar button ends it on press),
-    // may be spent by xochitl on the selection (device, 10cf412e: the object left selected after a conversion, the
-    // first undo took only our extra step)
-    // (undo only: after a group is undone, redoAvailable was false before and tells whether the press was applied;
-    // for a redo, undoAvailable is nearly always true already)
-    const bool justSelected = undo && (selected || (g_selectionEnded.isValid() && g_selectionEnded.elapsed() < 1000));
-    if (!undo && selected) return;   // a redo while selected only ends the selection: the groups stay
+    if (sc->property("selectionItemCount").toInt() > 0) return;
     QList<Group> &from = undo ? g_undoGroups : g_redoGroups;
     QList<Group> &to = undo ? g_redoGroups : g_undoGroups;
     bool ok = g_groupsKnown && !from.isEmpty() && from.last().page == page;
-    if (ok && undo && !from.last().post.isEmpty() && !justSelected && pageSig(sc) != from.last().post) ok = false;
-    if (!ok) { if (!justSelected) groupsUnknown(undo ? "an undo of something else" : "a redo of something else"); return; }
+    if (ok && undo && !from.last().post.isEmpty() && pageSig(sc) != from.last().post) ok = false;
+    if (!ok) { groupsUnknown(undo ? "an undo of something else" : "a redo of something else"); return; }
     const Group g = from.takeLast();
     to.append(g);
-    if (!justSelected) {
-        if (g.n > 1) ownUndoRedo(sc, undo, g.n - 1);
-        TLOG("%s: %d step(s) in one press", undo ? "undo" : "redo", g.n);
-        return;
-    }
-    // look a moment later whether the press was applied: before the group was undone (redone) nothing was left to
-    // redo (undo), so redoAvailable (undoAvailable) tells
-    const bool otherBefore = (undo ? sc->property("redoAvailable") : sc->property("undoAvailable")).toBool();
-    QPointer<QObject> scp(sc);
-    QTimer::singleShot(450, qApp, [scp, undo, g, otherBefore] {
-        if (!scp) return;
-        const bool applied = !otherBefore && (undo ? scp->property("redoAvailable") : scp->property("undoAvailable")).toBool();
-        const int more = applied ? g.n - 1 : g.n;
-        if (more > 0) ownUndoRedo(scp, undo, more);
-        TLOG("%s with a selection: the press %s, %d more step(s)", undo ? "undo" : "redo", applied ? "applied" : "spent on it", more);
-    });
+    if (g.n > 1) ownUndoRedo(sc, undo, g.n - 1);
+    TLOG("%s: %d step(s) in one press", undo ? "undo" : "redo", g.n);
+}
+
+// The toolbar's undo or redo button pressed while something is selected and not moved: the selection is ended first,
+// so the click that follows is a real undo or redo. A moved or resized selection is left to xochitl (clearing it
+// would drop the move; the groups are unknown after a move anyway).
+void beforeButtonUndoRedo() {
+    QString page;
+    QObject *sc = pageScene(&page);
+    if (!sc || sc->property("selectionItemCount").toInt() == 0) return;
+    if (!sc->property("pendingEdit").value<QTransform>().isIdentity()) return;
+    QMetaObject::invokeMethod(sc, "clearSelectedItems", Qt::DirectConnection);
+    TLOG("undo/redo button: the selection ended first");
 }
 
 void watchUndoRedo() {
@@ -355,6 +372,17 @@ void watchUndoRedo() {
     const int su = sc->metaObject()->indexOfSignal("aboutToUndo()"), sr = sc->metaObject()->indexOfSignal("aboutToRedo()");
     if (su < 0 || sr < 0) { TLOG("no aboutToUndo()/aboutToRedo(): one undo for a conversion is off"); return; }
     sc->setProperty("_rmppTextobjUndo", true);
+    for (const char *name : {"undoButton", "redoButton"}) {
+        QQuickItem *b = findAnywhere([name](QQuickItem *i) { return i->objectName() == QLatin1String(name); });
+        const int ps = b ? b->metaObject()->indexOfSignal("pressed()") : -1;
+        if (ps < 0) { TLOG("no %s pressed(): a press with a selection is left to xochitl", name); continue; }
+        if (b->property("_rmppTextobjPress").toBool()) continue;
+        b->setProperty("_rmppTextobjPress", true);
+        auto *hook = new SignalHook;
+        hook->setParent(b);
+        hook->fn = [] { beforeButtonUndoRedo(); };
+        QMetaObject::connect(b, ps, hook, QObject::staticMetaObject.methodCount(), Qt::DirectConnection, nullptr);
+    }
     for (const bool undo : {true, false}) {
         auto *hook = new SignalHook;
         hook->setParent(sc);

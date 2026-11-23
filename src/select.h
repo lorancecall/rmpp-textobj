@@ -455,7 +455,12 @@ void doubleTapNow(double x, double y, bool onText = false) {
     bool crossed = false;   // another object's strokes within this one's box: one rect would take them too
     for (const Placement &p : po.found)
         if (&p != hit && p.box.intersects(hit->box)) crossed = true;
-    if (onText && !crossed) {   // nothing but objects on the Text objects layer: one rect selects it, then the edit box
+    if (crossed && sc->property("currentLayer").toInt() == textLayer(sc)) {
+        // selecting one of them stroke by stroke mixed their strokes (device, f1b714c2)
+        showHint(dv, QStringLiteral("Text objects overlap here."));
+        return;
+    }
+    if (onText) {   // nothing but objects on the Text objects layer: one rect selects it, then the edit box
         QPointer<QObject> scp(sc);
         selectRect(sc, hit->box.toAlignedRect().adjusted(-2, -2, 2, 2), 0);
         QTimer::singleShot(250, sc, [scp] {
