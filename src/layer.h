@@ -339,9 +339,20 @@ void watchLayers() {
 }
 
 // The Text objects layer in the layers menu is fixed, as xochitl's own Text layer is (developer, #3): no move up or
-// down, no merge, no delete, no rename (LayerComponent's layer*Enabled switches, its name field read-only); the
-// layer below it cannot move up past it, and the layer above it cannot move down or merge into it. Rows are made
-// again when the menu opens: applied when the layers button is clicked and on the 1.5 s timer.
+// down, no merge, no delete, no rename (its buttons hidden, its name field read-only); the layer below it cannot
+// move up past it, and the layer above it cannot move down or merge into it.
+// The row's own switches (layerMoveUpEnabled...) are not changed: xochitl rebuilds a row's buttons when they change,
+// and Layer 1's arrows vanished and came back (developer, cb57b732). Only the buttons are touched: hidden on the
+// Text objects row, disabled in place (they look the same as xochitl's disabled ones) on its neighbours.
+void forEachAction(QQuickItem *row, const std::function<void(QQuickItem *, const QString &)> &fn) {
+    QList<QQuickItem *> stack{row};
+    while (!stack.isEmpty()) {
+        QQuickItem *x = stack.takeLast();
+        if (x != row && x->metaObject()->indexOfProperty("actionKey") >= 0) { fn(x, x->property("actionKey").toString()); continue; }
+        stack << x->childItems();
+    }
+}
+
 void lockTextLayerRows() {
     QList<QQuickItem *> rows;
     findAnywhere([&rows](QQuickItem *i) {
@@ -355,21 +366,14 @@ void lockTextLayerRows() {
     for (QQuickItem *r : rows) {
         const int i = r->property("layerIndex").toInt();
         if (i == t) {
-            for (const char *p : {"layerMoveUpEnabled", "layerMoveDownEnabled", "layerMergeEnabled", "layerTrashEnabled"})
-                if (r->property(p).toBool()) r->setProperty(p, false);
+            forEachAction(r, [](QQuickItem *b, const QString &) { if (b->isVisible()) b->setVisible(false); });
             if (QObject *in = r->property("textInput").value<QObject *>()) if (!in->property("readOnly").toBool()) in->setProperty("readOnly", true);
-            // the arrows stay shown when moving is off (as on any row): hidden, like the Text row's
-            QList<QQuickItem *> stack{r};
-            while (!stack.isEmpty()) {
-                QQuickItem *x = stack.takeLast();
-                if (x != r && x->metaObject()->indexOfProperty("actionKey") >= 0) { if (x->isVisible()) x->setVisible(false); continue; }
-                stack << x->childItems();
-            }
         } else if (i == t - 1) {   // just below: moving it up would move the Text objects layer down
-            if (r->property("layerMoveUpEnabled").toBool()) r->setProperty("layerMoveUpEnabled", false);
+            forEachAction(r, [](QQuickItem *b, const QString &k) { if (k == QLatin1String("up") && b->isEnabled()) b->setEnabled(false); });
         } else if (i == t + 1) {   // just above: moving down or merging would go into the Text objects layer
-            if (r->property("layerMoveDownEnabled").toBool()) r->setProperty("layerMoveDownEnabled", false);
-            if (r->property("layerMergeEnabled").toBool()) r->setProperty("layerMergeEnabled", false);
+            forEachAction(r, [](QQuickItem *b, const QString &k) {
+                if ((k == QLatin1String("down") || k == QLatin1String("merge")) && b->isEnabled()) b->setEnabled(false);
+            });
         }
     }
 }
