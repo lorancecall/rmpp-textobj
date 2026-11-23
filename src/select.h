@@ -333,7 +333,8 @@ Item {
     id: tapArea
     property bool active: false
     anchors.fill: parent
-    z: 5
+    // above the pen tool's own input (with the pen tool it saw no taps at z 5); it only watches (passive grab)
+    z: 9000
     // finger only: with the pen it kept the selection tool's own pen input (menu taps, moving the selection) from
     // xochitl, seen on the device (OS 3.29). Pen double taps on a selection still reach xochitl's handler.
     TapHandler {

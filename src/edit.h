@@ -339,7 +339,7 @@ void layerConvStep(bool undo, LastConv c, int tries = 0) {
     QString page;
     QObject *sc = pageScene(&page);
     if (!sc || page != c.page) return;
-    if (sc->property("currentLayer").toInt() != c.home) return;   // a layer step (settleLayer)
+    if (sc->property("currentLayer").toInt() != c.home) { settleLayer(undo); return; }   // it took a layer step
     const QSet<QString> keys = layerKeys(sc);
     if (undo) {
         if (keys != c.lAfter) { TLOG("undo: the user's layer changed: not the conversion"); return; }
