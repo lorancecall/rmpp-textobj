@@ -78,7 +78,8 @@ struct LayerSession {
     int home = -1, text = -1;
     QSet<QString> start;   // the layer's strokes once the selection is made (untouched: the same at the end)
     bool active = false, selecting = false;
-    int pending = 0;       // an undo (1) or redo (2) asked for while the object was selected
+    int pending = 0;
+    int objects = -1;      // text objects found on the layer at the start (strays are moved only if none is lost)       // an undo (1) or redo (2) asked for while the object was selected
     QElapsedTimer since;
 };
 LayerSession g_ls;
@@ -105,10 +106,13 @@ void startTextSession(QPointer<QObject> scp, const QString &page, int home, int 
     });
 }
 
+int objectCount(QObject *sc);
+
 // Once the selection on the Text objects layer is made: what is there now (to tell a move at the end).
 void textSessionSelected() {
     if (!g_ls.active || !g_ls.sc) return;
     g_ls.start = layerKeys(g_ls.sc);
+    g_ls.objects = objectCount(g_ls.sc);
     g_ls.selecting = false;
     TLOG("text layer: object selected (%lld strokes on the layer)", (long long)g_ls.start.size());
 }
@@ -143,17 +147,27 @@ void switchBack(QPointer<QObject> scp, int home, int text, int pending, const QS
     QTimer::singleShot(500, qApp, [scp, home, text, pending, keys, tries] { switchBack(scp, home, text, pending, keys, tries + 1); });
 }
 
+void moveStraysThenSwitch(QPointer<QObject> scp, int text, int home);
+int strayCount(QObject *sc);
+
 void endTextSession() {
     QObject *sc = g_ls.sc;
     g_ls.active = false;
     if (!sc) return;
-    const int home = g_ls.home, text = g_ls.text, pending = g_ls.pending;
+    const int home = g_ls.home, text = g_ls.text, pending = g_ls.pending, objects = g_ls.objects;
     const QSet<QString> start = g_ls.start;
     QPointer<QObject> scp(sc);
-    QTimer::singleShot(600, qApp, [scp, home, text, pending, start] {
+    QTimer::singleShot(600, qApp, [scp, home, text, pending, start, objects] {
         QObject *sc = scp;
         if (!sc) return;
         if (sc->property("currentLayer").toInt() != text) { TLOG("text layer: ended on another layer"); return; }
+        // a stroke written on it (a pen right after a tool change): to the user's layer; only if every object is
+        // still found (an object not recognized after an edit would look like strays)
+        if (strayCount(sc) > 0 && objects >= 0 && objectCount(sc) >= objects) {
+            moveStraysThenSwitch(scp, text, home);
+            if (pending) QTimer::singleShot(2500, qApp, [pending] { afterPendingStep(pending == 1); });
+            return;
+        }
         const QSet<QString> keys = layerKeys(sc);
         if (keys != start || start.isEmpty()) {
             setLayer(sc, home);
@@ -233,19 +247,35 @@ void layerChanged() {
 // Strokes on the Text objects layer that are not part of a text object (nor a mark on one): written there while
 // that layer was current by mistake (a page opened on it, developer's "테" on 0e3040b5). Moved to the user's layer
 // (copied there in one step, deleted here in one), then that layer is made current.
+QList<int> strayIndexes(QObject *sc, PageObjects *out) {
+    QQuickItem *dv = documentView();
+    const QString pageId = dv ? dv->property("currentPageId").toString() : QString();
+    *out = findObjects(sc, pageId, false);
+    QSet<int> keep;
+    for (const Placement &p : out->found) {
+        for (int m : p.members) if (m >= 0) keep.insert(m);
+        for (int i = 0; i < out->rects.size(); ++i) if (isMark(*out, p, i)) keep.insert(i);
+    }
+    QList<int> strays;
+    for (int i = 0; i < out->rects.size(); ++i) if (!keep.contains(i)) strays << i;
+    return strays;
+}
+
+int objectCount(QObject *sc) {
+    QQuickItem *dv = documentView();
+    return int(findObjects(sc, dv ? dv->property("currentPageId").toString() : QString(), false).found.size());
+}
+
+int strayCount(QObject *sc) {
+    PageObjects po;
+    return int(strayIndexes(sc, &po).size());
+}
+
 void moveStraysThenSwitch(QPointer<QObject> scp, int text, int home) {
     QObject *sc = scp;
     if (!sc) return;
-    QQuickItem *dv = documentView();
-    const QString pageId = dv ? dv->property("currentPageId").toString() : QString();
-    const PageObjects po = findObjects(sc, pageId, false);
-    QSet<int> keep;
-    for (const Placement &p : po.found) {
-        for (int m : p.members) if (m >= 0) keep.insert(m);
-        for (int i = 0; i < po.rects.size(); ++i) if (isMark(po, p, i)) keep.insert(i);
-    }
-    QList<int> strays;
-    for (int i = 0; i < po.rects.size(); ++i) if (!keep.contains(i)) strays << i;
+    PageObjects po;
+    const QList<int> strays = strayIndexes(sc, &po);
     if (strays.isEmpty()) { setLayer(sc, home); return; }
     TLOG("text layer: %lld stroke(s) on it are not text objects: moved to layer %d", (long long)strays.size(), home + 1);
     const bool switched = useSelectionTool();
@@ -357,4 +387,34 @@ void watchLayersMenu() {
     hook->fn = [] { for (int ms : {0, 150, 400}) QTimer::singleShot(ms, qApp, [] { lockTextLayerRows(); }); };
     QMetaObject::connect(btn, btn->metaObject()->indexOfSignal("clicked()"), hook, QObject::staticMetaObject.methodCount(),
                          Qt::DirectConnection, nullptr);
+}
+
+// The document closing (its close button pressed) while the Text objects layer is current and not picked by the
+// user (an object selected there): the user's layer current first, so the page is not saved on that layer (then it
+// opened there next time: the cause of the developer's "테" on 0e3040b5).
+void closeGuard() {
+    QString page;
+    QObject *sc = pageScene(&page);
+    if (!sc || g_userTextLayer) return;
+    const int t = textLayer(sc);
+    if (t < 0 || sc->property("currentLayer").toInt() != t) return;
+    int home = g_ls.active ? g_ls.home : -1;
+    if (home < 0) for (int i = sc->property("layerCount").toInt() - 1; i >= 0; --i) if (i != t) { home = i; break; }
+    if (home < 0) return;
+    g_ls.active = false;
+    QMetaObject::invokeMethod(sc, "clearSelectedItems");
+    setLayer(sc, home);
+    TLOG("text layer: the document closes: layer %d current first", home + 1);
+}
+
+void watchCloseButton() {
+    QQuickItem *b = findAnywhere([](QQuickItem *i) { return i->objectName() == QLatin1String("close-documentview-button") && i->isVisible(); });
+    if (!b || b->property("_rmppTextobjClose").toBool()) return;
+    const int sig = b->metaObject()->indexOfSignal("pressed()");
+    if (sig < 0) return;
+    b->setProperty("_rmppTextobjClose", true);
+    auto *hook = new SignalHook;
+    hook->setParent(b);
+    hook->fn = [] { closeGuard(); };
+    QMetaObject::connect(b, sig, hook, QObject::staticMetaObject.methodCount(), Qt::DirectConnection, nullptr);
 }
