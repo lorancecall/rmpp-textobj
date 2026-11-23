@@ -116,11 +116,24 @@ void ensureTextLayer(QPointer<QObject> scp, int home, std::function<void(int, in
 
 // Where the objects on the Text objects layer are, per page: from conversions, and read whenever that layer is
 // current. A double tap far from all of them does not make that layer current (a step) just to look.
-// Kept in textlayer.json ({page: [[x, y, w, h], ...]}) so they hold after a restart (records have no page position).
+// Kept in textlayer.json ({page: [[x, y, w, h], ...]}) so they hold after a restart (records have no page position);
+// pages that no longer exist are dropped on load; the package's purge removes the folder.
 QHash<QString, QList<QRectF>> g_textBoxes;
 bool g_textBoxesLoaded = false;
 
 QString textBoxesPath() { return QLatin1String(kDataDir) + QStringLiteral("/textlayer.json"); }
+
+// The pages that still exist: a page's strokes are kept in xochitl/<document>/<page>.rm; a deleted document's files
+// go when the trash is emptied, and so do its pages' entries here (developer: per-document data goes with it).
+QSet<QString> existingPages() {
+    QSet<QString> pages;
+    QDirIterator it(QStringLiteral("/home/root/.local/share/remarkable/xochitl"), {QStringLiteral("*.rm")}, QDir::Files,
+                    QDirIterator::Subdirectories);
+    while (it.hasNext()) pages.insert(QFileInfo(it.next()).completeBaseName());
+    return pages;
+}
+
+void saveTextBoxes();
 
 void loadTextBoxes() {
     if (g_textBoxesLoaded) return;
@@ -128,13 +141,21 @@ void loadTextBoxes() {
     QFile f(textBoxesPath());
     if (!f.open(QIODevice::ReadOnly)) return;
     const QJsonObject o = QJsonDocument::fromJson(f.readAll()).object();
+    f.close();
+    const QSet<QString> pages = existingPages();
+    int pruned = 0;
     for (auto it = o.begin(); it != o.end(); ++it) {
+        if (!pages.contains(it.key())) { ++pruned; continue; }
         QList<QRectF> boxes;
         for (const QJsonValue &v : it.value().toArray()) {
             const QJsonArray a = v.toArray();
             if (a.size() == 4) boxes << QRectF(a[0].toDouble(), a[1].toDouble(), a[2].toDouble(), a[3].toDouble());
         }
         g_textBoxes.insert(it.key(), boxes);
+    }
+    if (pruned) {
+        TLOG("text layer: %d page(s) gone, their object boxes dropped", pruned);
+        saveTextBoxes();
     }
 }
 
@@ -154,9 +175,14 @@ void saveTextBoxes() {
     QFile::rename(textBoxesPath() + QStringLiteral(".new"), textBoxesPath());
 }
 
+// At most 200 boxes per page and 500 pages (the oldest entries first out; a page's list is replaced whenever the
+// Text objects layer is current there).
 void rememberTextBox(const QString &page, const QRectF &box) {
     loadTextBoxes();
-    g_textBoxes[page] << box;
+    QList<QRectF> &boxes = g_textBoxes[page];
+    boxes << box;
+    while (boxes.size() > 200) boxes.removeFirst();
+    while (g_textBoxes.size() > 500) g_textBoxes.erase(g_textBoxes.begin());
     saveTextBoxes();
 }
 

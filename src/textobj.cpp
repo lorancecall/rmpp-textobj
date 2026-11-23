@@ -28,6 +28,7 @@
 #include <QtCore/QDir>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
+#include <QtCore/QDirIterator>
 #include <QtCore/QFileInfo>
 #include <QtCore/QHash>
 #include <QtCore/QJsonArray>

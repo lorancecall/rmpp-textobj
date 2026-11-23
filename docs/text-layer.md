@@ -69,7 +69,9 @@ redo takes A, and the rest is sent right behind it.
 - **Nothing changes (tool or layer) unless the double tap is on a text object.** An object on the current layer: the
   selection tool is turned on if needed, the object selected and its edit box opened.
 - Else, if the tap is on one of T's objects (their boxes, known from conversions and from whenever T is current, kept
-  per page in `textlayer.json` so they hold after a restart): the selection tool on, T made current, **a step the user
+  per page in `textlayer.json` so they hold after a restart; pages that no longer exist, a document deleted and the
+  trash emptied, are dropped from it on load; at most 200 boxes per page and 500 pages; `vellum purge` removes it
+  with the folder): the selection tool on, T made current, **a step the user
   sees** (the layers menu shows it), and the object is selected there (one rect: T holds only objects) and its edit
   box opened. The edit is one undo step (the one-layer chain of #6/#15, T being current).
 
