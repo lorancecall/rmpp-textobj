@@ -308,7 +308,9 @@ void watchLayers() {
     hook(sc, "pendingEditChanged()", [] {   // also emitted, unchanged, during undo: only a real transform counts
         QString p;
         QObject *s = pageScene(&p);
-        if (!s || putting() || adjusting() || g_own > 0) return;
+        // not gated on putting(): that stays on for seconds after a conversion, and a move right after one was
+        // missed (device, effa3783); our own steps never transform a selection
+        if (!s || adjusting() || g_own > 0) return;
         if (!s->property("pendingEdit").value<QTransform>().isIdentity()) g_moved = true;
     });
     hook(sc, "rootDocumentLengthChanged()", [] { if (!putting() && g_own == 0) groupsUnknown("typed text"); });
@@ -317,7 +319,7 @@ void watchLayers() {
             g_moved = false;
             QString p;
             QObject *s = pageScene(&p);
-            if (s && !putting() && g_own == 0) { TLOG("a move or resize: one step"); pushGroup(s, p, 1, false); }
+            if (s && g_own == 0) { TLOG("a move or resize: one step"); pushGroup(s, p, 1, false); }
         }
         QTimer::singleShot(700, qApp, [] { QString p; if (QObject *s = pageScene(&p)) readTextBoxes(s); });
     });

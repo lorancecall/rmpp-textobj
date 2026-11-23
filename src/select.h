@@ -434,9 +434,17 @@ void doubleTapNow(double x, double y, bool onText = false) {
     }
     {   // two or more objects right here: which one is meant is not clear (the 12 px margin alone is not an overlap:
         // two objects side by side both have it at the gap, device 2351692b)
-        int n = 0;
-        for (const Placement &p : po.found) if (p.box.contains(at)) ++n;
-        if (n > 1) { showHint(dv, QStringLiteral("Text objects overlap here.")); return; }
+        // (placements sharing strokes are one object: an undone conversion's record matching the same strokes)
+        QList<QSet<int>> here;
+        for (const Placement &p : po.found) {
+            if (!p.box.contains(at)) continue;
+            QSet<int> ms;
+            for (int m : p.members) if (m >= 0) ms.insert(m);
+            bool same = false;
+            for (const QSet<int> &h : here) if (h.intersects(ms)) same = true;
+            if (!same) here << ms;
+        }
+        if (here.size() > 1) { showHint(dv, QStringLiteral("Text objects overlap here.")); return; }
     }
     if (!selectionToolActive()) {   // on an object, another tool: the selection tool first (selecting needs it)
         const bool switched = useSelectionTool();
@@ -455,12 +463,22 @@ void doubleTapNow(double x, double y, bool onText = false) {
     TLOG("double tap: selecting a text object (%d strokes)", hit->matched);
     // another object's strokes within this one's box: one rect would take them too. A stroke counts by its centre
     // (boxes of objects side by side touch or overlap a little: every tap said "overlap", device 2351692b)
+    // Strokes of the object itself do not count, also when another record matches them (the same text converted
+    // again where an undone conversion was: every tap said "overlap", device effa3783).
     bool crossed = false;
     const QRectF inner = hit->box.adjusted(2, 2, -2, -2);
+    const QSet<int> own(hit->members.cbegin(), hit->members.cend());
     for (const Placement &p : po.found) {
         if (&p == hit) continue;
         for (int m : p.members)
-            if (m >= 0 && m < po.rects.size() && inner.contains(QRectF(po.rects[m]).center())) { crossed = true; break; }
+            if (m >= 0 && m < po.rects.size() && !own.contains(m) && inner.contains(QRectF(po.rects[m]).center())) {
+                crossed = true;
+                const QRect r = po.rects[m];
+                TLOG("double tap: crossed: record %d's stroke %d,%d %dx%d in record %d's box %.0f,%.0f %.0fx%.0f",
+                     p.rec, r.x(), r.y(), r.width(), r.height(), hit->rec, hit->box.x(), hit->box.y(),
+                     hit->box.width(), hit->box.height());
+                break;
+            }
         if (crossed) break;
     }
     if (crossed && sc->property("currentLayer").toInt() == textLayer(sc)) {
