@@ -147,7 +147,13 @@ void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k, cons
         void *a3[] = {nullptr, &lay, &its, &sc1, &centre};
         sc->qt_metacall(QMetaObject::InvokeMetaMethod, add, a3);
         TLOG("new ink: %d strokes in one undo step (%d checks)%s", k, tries + 1, toText ? ", on the text layer" : "");
-        if (toText) rememberTextBox(page, box);
+        if (toText) {
+            // cloneAddAndSelectItems selects them there; that selection is not on the current layer (not seen by
+            // selectionItemCount), and the next undo only ended it while our extra step went through (device,
+            // 10cf412e: the object showed selected, and the first undo took only the object)
+            QMetaObject::invokeMethod(sc, "clearSelectedItems");
+            rememberTextBox(page, box);
+        }
         pushGroup(sc, page, g_putSteps + 1, false);
     };
     QTimer::singleShot(400, sc, [scp, k, check] {
