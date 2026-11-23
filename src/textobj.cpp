@@ -239,6 +239,7 @@ bool uiReady() {
 #include "edit.h"
 #include "addtext.h"
 #include "select.h"
+#include "layer.h"
 
 } // namespace
 
@@ -275,6 +276,8 @@ void textobjInit() {
         watchSelection();
         watchDoubleTap();
         watchUndoRedo();
+        watchLayers();
+        checkTextSession();
         installTapOverlay();
         closeStaleInkEdit();
         closeStaleAddPlace();

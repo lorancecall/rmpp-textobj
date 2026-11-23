@@ -364,9 +364,10 @@ void installTapOverlay() {
 bool viewToPage(QQuickItem *dv, const QPointF &p, QPointF *out);
 
 // Double tap at x, y (DocumentView coordinates) with the selection tool: select the text object there; if it is
-// selected already, edit it.
-void doubleTapAt(double x, double y) {
-    if (g_edit.box || putting() || adjusting() || !selectionToolActive()) return;
+// selected already, edit it. Not found on the current layer: looked for on the Text objects layer (layer.h), made
+// current for it (onText); nothing there either: the user's layer comes back (the session ends unselected).
+void doubleTapAt(double x, double y, bool onText = false) {
+    if (g_edit.box || putting() || adjusting() || !selectionToolActive()) { if (onText) textSessionSelected(); return; }
     QQuickItem *dv = documentView();
     QObject *sc = dv ? dv->property("sceneController").value<QObject *>() : nullptr;
     QPointF at;
@@ -387,7 +388,15 @@ void doubleTapAt(double x, double y) {
         po = findObjects(sc, pageId, true);
         hit = hitAt();
     }
-    if (!hit) return;
+    if (!hit) {
+        const int t = textLayer(sc), cur = sc->property("currentLayer").toInt();
+        if (onText) { TLOG("double tap: no text object here on the text layer either"); textSessionSelected(); }
+        else if (t >= 0 && t != cur && !textSessionActive()) {
+            g_lastDoubleTap.start();
+            startTextSession(QPointer<QObject>(sc), pageId, cur, t, [x, y] { doubleTapAt(x, y, true); });
+        }
+        return;
+    }
     if (!sel.isEmpty()) {
         bool only = false;
         const QList<Placement> objs = selectedObjects(po, sel, &only);
@@ -404,6 +413,7 @@ void doubleTapAt(double x, double y) {
     const QList<int> members = hit->members;
     QTimer::singleShot(250, sc, [scp, dvp, rects, members, pageId] {
         setSelection(scp, rects, members, [scp, dvp, pageId] {
+            textSessionSelected();   // on the Text objects layer: what is there now
             // a stroke drawn across the object encloses some of its strokes and cannot be left out: editing would
             // delete it too, so say so (the edit needs the object alone, or with its marks)
             if (!scp || !dvp) return;
