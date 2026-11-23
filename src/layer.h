@@ -115,33 +115,53 @@ void textSessionSelected() {
 
 void afterPendingStep(bool undo);   // edit.h
 
-// The selection ended: the user's layer back. Untouched: undo S1 (an undo right after a selection ends is ignored,
-// so a moment later, and checked); moved: S2.
+// The selection ended: the user's layer back. Untouched: undo S1; moved or resized: S2. A move is applied a moment
+// after the selection ends, so the layer is compared 600 ms later; and the undo is checked: if it changed the
+// layer's strokes, it took a move (not seen in time), which is redone, and S2 follows. If it changed nothing (an undo
+// right after a selection ends is ignored), it is sent again.
+void switchBack(QPointer<QObject> scp, int home, int text, int pending, const QSet<QString> &keys, int tries = 0) {
+    QObject *sc = scp;
+    if (!sc) return;
+    if (sc->property("currentLayer").toInt() == home) {
+        TLOG("text layer: back to layer %d (switch undone)", home + 1);
+        if (pending) QTimer::singleShot(500, qApp, [pending] { afterPendingStep(pending == 1); });
+        return;
+    }
+    if (tries > 0 && layerKeys(sc) != keys) {   // the undo took a move
+        ownUndoRedo(sc, false);
+        QTimer::singleShot(500, qApp, [scp, home, pending] {
+            if (!scp) return;
+            setLayer(scp, home);
+            TLOG("text layer: the object was moved: back to layer %d (a step of its own)", home + 1);
+            if (pending) QTimer::singleShot(500, qApp, [pending] { afterPendingStep(pending == 1); });
+        });
+        return;
+    }
+    if (tries >= 3) { TLOG("text layer: the switch back was not taken: left on the text layer"); return; }
+    if (tries > 0) TLOG("text layer: switch back sent again");
+    ownUndoRedo(sc, true);
+    QTimer::singleShot(500, qApp, [scp, home, text, pending, keys, tries] { switchBack(scp, home, text, pending, keys, tries + 1); });
+}
+
 void endTextSession() {
     QObject *sc = g_ls.sc;
     g_ls.active = false;
     if (!sc) return;
-    if (sc->property("currentLayer").toInt() != g_ls.text) { TLOG("text layer: ended on another layer"); return; }
-    const bool same = layerKeys(sc) == g_ls.start && !g_ls.start.isEmpty();
-    const int home = g_ls.home, pending = g_ls.pending;
+    const int home = g_ls.home, text = g_ls.text, pending = g_ls.pending;
+    const QSet<QString> start = g_ls.start;
     QPointer<QObject> scp(sc);
-    if (!same) {
-        setLayer(sc, home);
-        TLOG("text layer: object changed, back to layer %d (a step of its own)", home + 1);
-        if (pending) QTimer::singleShot(500, qApp, [pending] { afterPendingStep(pending == 1); });
-        return;
-    }
-    QTimer::singleShot(450, qApp, [scp, home, pending] {
-        if (!scp) return;
-        ownUndoRedo(scp, true);
-        QTimer::singleShot(500, qApp, [scp, home, pending] {
-            if (!scp) return;
-            if (scp->property("currentLayer").toInt() != home) {   // ignored: once more
-                ownUndoRedo(scp, true);
-                TLOG("text layer: switch back sent again");
-            } else TLOG("text layer: back to layer %d (switch undone)", home + 1);
+    QTimer::singleShot(600, qApp, [scp, home, text, pending, start] {
+        QObject *sc = scp;
+        if (!sc) return;
+        if (sc->property("currentLayer").toInt() != text) { TLOG("text layer: ended on another layer"); return; }
+        const QSet<QString> keys = layerKeys(sc);
+        if (keys != start || start.isEmpty()) {
+            setLayer(sc, home);
+            TLOG("text layer: object changed, back to layer %d (a step of its own)", home + 1);
             if (pending) QTimer::singleShot(500, qApp, [pending] { afterPendingStep(pending == 1); });
-        });
+            return;
+        }
+        switchBack(scp, home, text, pending, keys);
     });
 }
 
