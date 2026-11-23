@@ -130,22 +130,28 @@ void appendLine(Placed *out, const QString &text, const QPointF &origin, double 
     }
 }
 
-// The sizes a converted object can have (em, scene units; 40 is about xochitl's body text). Handwriting is never the
-// same size twice, so a size taken from it straight made every object a little different (issue #7).
+// xochitl's body text in the glyph font's em (page units): measured on the Paper Pro (OS 3.29.1), typed text
+// "가나다 Hxa" next to the same text as a text object; at em 40 the object was 1.23 (H) to 1.32 (line width) times as
+// big, so the body text is about em 31. 100% in the edit box is this size.
+const double kBodyEm = 31;
+
 double lineWidth(const QString &text);
 
-const double kEmSteps[] = {28, 40, 52, 68, 88, 116};
+// The sizes a converted object can have, relative to the body text. An object starts at 100% unless its handwriting
+// is clearly bigger (or much smaller): handwriting is never the same size twice, and a size taken from it straight
+// made every object a little different (issue #7).
+const double kSizeSteps[] = {0.7, 1.0, 1.5, 2.0, 3.0};
 
 double snapEm(double h) {
-    double best = kEmSteps[0];
-    for (double s : kEmSteps)
-        if (std::abs(std::log(h / s)) < std::abs(std::log(h / best))) best = s;
-    return best;
+    const double r = h / kBodyEm;
+    const double step = r < 0.6 ? kSizeSteps[0] : r < 1.6 ? kSizeSteps[1] : r < 2.4 ? kSizeSteps[2] : r < 3.4 ? kSizeSteps[3]
+                                                                                                         : kSizeSteps[4];
+    return kBodyEm * step;
 }
 
 // Recognized lines ("x0 y0 x1 y1<TAB>text") as glyph strokes, either over the original lines (replace) or stacked
 // below the selection. One size for the whole object: the size of its longest line's handwriting, snapped to
-// kEmSteps.
+// kSizeSteps.
 Placed placeLines(const QStringList &lines, const QRectF &sel, bool replace) {
     Placed out;
     QString all;

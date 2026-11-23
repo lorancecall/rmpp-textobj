@@ -82,10 +82,10 @@ bool viewToPage(QQuickItem *dv, const QPointF &p, QPointF *out) {
 }
 
 // The em size for a new object: the size the last new object was made at (its size in the edit box included), else
-// about the size of xochitl's body text. Not converted handwriting's: that takes the step nearest the handwriting.
+// xochitl's body text (kBodyEm, 100%). Converted handwriting takes a step of kSizeSteps.
 double defaultTextObjectEm() {
     const double em = g_state->value(QStringLiteral("addTextEm")).toDouble();
-    return em > 0 ? qBound(20.0, em, 200.0) : 40.0;
+    return em > 0 ? qBound(20.0, em, 200.0) : kBodyEm;   // 100%: xochitl's body text
 }
 
 // Closes the typing tool's menu (foldout), as picking one of xochitl's own entries does.
