@@ -133,20 +133,20 @@ RMPP_TEXTOBJ_API int rmpp_textobj_missing(const char *text, char *missing, int c
 RMPP_TEXTOBJ_API int rmpp_textobj_put_lines(const char *lines, double left, double top, double right, double bottom,
                                             int replace, const char *lang) {
     const OpenPage p = openPage();
-    if (!p.sc || !p.ph) return -2;
+    if (!p.sc || !p.ph) { TLOG("put lines: no open page"); return -2; }
     g_langHint = QString::fromUtf8(lang ? lang : "");
     const QStringList ls = QString::fromUtf8(lines ? lines : "").split(QLatin1Char('\n'), Qt::SkipEmptyParts);
     QStringList texts;
     for (const QString &l : ls)
         if (!blankText(l.section(QLatin1Char('\t'), 1))) texts << l.section(QLatin1Char('\t'), 1);
-    if (texts.isEmpty()) return 0;   // nothing but blanks: no object
+    if (texts.isEmpty()) { TLOG("put lines: only blanks"); return 0; }   // nothing but blanks: no object
     const QString missing = missingGlyphs(texts.join(QLatin1Char(' ')));
     if (!missing.isEmpty()) {
         showHint(p.dv, QStringLiteral("No glyphs for: %1. Add the language in Settings > Languages.").arg(missing));
         return -1;
     }
     Placed pl = placeLines(ls, QRectF(QPointF(left, top), QPointF(right, bottom)), replace != 0);
-    if (pl.strokes.isEmpty()) return 0;
+    if (pl.strokes.isEmpty()) { TLOG("put lines: no glyphs for the text"); return 0; }
     TLOG("text object from %lld recognized line(s)", (long long)ls.size());
     putInk(p.sc, p.ph, p.dv, p.sc->property("currentLayer").toInt(), replace != 0, pl, texts.join(QLatin1Char('\n')), {});
     return 1;

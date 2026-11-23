@@ -36,103 +36,94 @@ not current (dropped within a second), no lasso path (only its result), no way t
 - A double tap on typed text selects a word there (xochitl takes it).
 - The page file stores the current layer; a page closed while T is current opens on T.
 
-## Design (S'): no hidden layer switching
+## Probed facts that shape the design (2026-11-23)
 
-The first design hid the layer changes: the object was selected on T right after a conversion and after a double
-tap, with a pair of switches (S1 to T, S2 back) that undo and redo were meant to skip. That needed a model of
-xochitl's undo history that cannot be checked (switches cannot be merged, removed or inspected; undo is asynchronous;
-T cannot be seen from L). Over about fifteen test rounds every fix moved the leak somewhere else (table below), and one
-build broke a notebook. The developer chose the simpler design (S'): **T is made current only by the user's own
-action**, and only rules on what can be observed are used.
+- `aboutToUndo`/`aboutToRedo` are emitted inside xochitl's `undo()`/`redo()`, before the step. The step is usually
+  applied inside the call as well, but once it came about 15 ms later, behind a pending edit. Calls are applied in
+  order.
+- With fast presses (buttons and gestures), the page seen at each `aboutToUndo`/`aboutToRedo` already includes every
+  earlier press.
+- Layer calls are applied later, not inside the call (`addLayer` then `layerCount - 1` in the same tick still names the
+  old index). A layer change ends the selection.
+- No call reads another layer's strokes.
+- The history survives a page turn; closing a notebook clears it.
+- `penHandler.strokeCompleted` fires for every pen stroke (and lasso). A move or resize is not a step when the pen
+  lifts: `pendingEditChanged` carries its transform, and the step (move and resize together) is committed when the
+  selection ends.
+
+## Design
+
+**T is made current only by the user's own action**, and everything is read from the page when it is needed: T by
+its name, the writing layer by the name of the last other layer the user had current, never a kept index.
 
 ### Conversion (lasso convert, or Add text object)
 
-1. Delete the handwriting on L (step **A**; not for Add text object).
-2. Draw the glyph strokes on L (k steps), select and record them, take copies, undo the k strokes (checked).
-3. If the page has no T: `addLayer`, its name, `moveLayer` to the bottom (checked; taken as found if it is not where
-   expected), L current again (**X1-X4**; L's index goes up by one).
-4. Add the copies to T in one step (**B**) while L stays current. The object is **not selected**: a selection on T
-   needs T current, which would be a step.
+1. If the page has no T and the writing layer is current: make T first. `addLayer` (on top, current), its name,
+   `moveLayer` to the bottom, the writing layer current again (**X**, 3-4 steps), each step waited for. The handwriting
+   is then selected again by its strokes and checked; if it is not exactly the handwriting, nothing is deleted.
+2. Delete the handwriting (**A**; not for Add text object).
+3. Draw the glyph strokes, record them, take copies, undo the k strokes (checked). Add the copies to T in one step
+   (**B**) while the writing layer stays current. The object is not selected.
+4. One undo group: X + A + B.
 
-History: `A, [X1-X4], B`. One undo from the result: the user's undo takes B (unseen from L), and `steps + 1` more
-undos (X4..X1, A) are sent right behind it; the handwriting comes back selected. One redo from the start: the user's
-redo takes A, and the rest is sent right behind it.
+An edit on T (T current) is A', B' on T: one group of 2.
 
 ### Double tap (finger)
 
-- A QML overlay over the page (z 9000, above the pen tool's input) watches finger taps without taking them (passive
-  grab); two taps within 450 ms and 60 px make a double tap (the TapHandler's own double tap missed some with the pen
-  tool).
-- Left alone: taps on the toolbar strip (x < 130 while it is shown); a double tap with an undo or redo within 800 ms
-  (the two- and three-finger gestures look like double taps), checked after 350 ms.
-- Large contacts (a palm, over 45 px) are not taps.
-- **Nothing changes (tool or layer) unless the double tap is on a text object.** An object on the current layer: the
-  selection tool is turned on if needed, the object selected and its edit box opened.
-- Else, if the tap is on one of T's objects (their boxes, known from conversions and from whenever T is current, kept
-  per page in `textlayer.json` so they hold after a restart; pages that no longer exist, a document deleted and the
-  trash emptied, are dropped from it on load; at most 200 boxes per page and 500 pages; `vellum purge` removes it
-  with the folder): the selection tool on, T made current, **a step the user
-  sees** (the layers menu shows it), and the object is selected there (one rect: T holds only objects) and its edit
-  box opened. The edit is one undo step (the one-layer chain of #6/#15, T being current).
+- A QML overlay over the page (z 9000, above the pen tool's input) watches finger taps without taking them. Two taps
+  within 450 ms and 60 px make a double tap. Large contacts (a palm), the toolbar strip, and a double tap that comes
+  with an undo or redo (the gestures) are left alone.
+- **Nothing changes unless it is on a text object.**
+- An object on the current layer: selection tool on, the object selected, its edit box opened.
+- Else, one of T's known boxes there: the selection tool on, T made current (one group with the step before it), the
+  object selected (one rect) and its edit box opened.
+- Two or more objects there (on the current layer or among T's boxes): a short "Text objects overlap here." message,
+  nothing else.
+- T's boxes: added at a conversion, read again whenever T is current and a selection ends there. Kept per page in
+  `textlayer.json`: pages gone are dropped on load, at most 200 boxes a page and 500 pages, and `vellum purge` removes
+  it.
 
-### Object mode (T current)
+### T current (object mode)
 
-- The user picked T in the layers menu: the selection tool is turned on.
-- T current for any reason (picked, a double tap, an undo): choosing another tool (pen, eraser, text) makes the
-  writing layer current, a step the user started by choosing the tool. Ink never goes onto T.
-- A page that opens on T: **nothing is done** (no layer or tool switch); only a later change of tool counts.
+- T current for any reason (a double tap, a pick in the layers menu, an undo, a page that opens on it): the selection
+  tool is turned on (not a step).
+- Choosing another tool there (the selection tool's `selected` turning false): the writing layer current again, one
+  group with the step before it. Ink never goes onto T.
 
-Planned: dashed boxes on every object, a tap edits (overlap: a short message), drag moves, lasso multi-selects (Edit
-off for more than one); the same overlay will let a double tap take the tap before xochitl's typed text does.
+Planned: dashed boxes on every object, a tap edits, drag moves, lasso multi-selects (edit off for more than one).
 
 ### Layers menu
 
-The Text objects row: up, down and merge hidden; **picking it and delete stay** (the developer: it must be
-deletable). Renaming is not blocked: making the name field read-only also stopped the row from being picked. A
-renamed layer is no longer known as the Text objects layer (the next conversion makes a new one). The row below it cannot move up past it, the row above it cannot move down or merge into it (their
-buttons disabled in place). Only the button items are touched: changing a row's `layer*Enabled` switches made xochitl
-rebuild its buttons (they flickered). Applied before every frame (`QQuickWindow::afterAnimating`) for 4 s after the
-layers button is pressed, so nothing shows for a frame.
+- The T row: up, down and merge hidden. Picking it and delete stay; rename is not blocked.
+- The row below T cannot move up past it; the row above cannot move down or merge into it.
+- The last other layer cannot be deleted.
+- Only button items are touched. What we hid or disabled on a row that is no longer in one of those places is put
+  back. Applied before every frame while the menu was opened in the last 30 s.
 
-### Removed with (S')
+## Undo and redo: groups
 
-Hidden selections and their S1/S2 pairs, the settle loop, the press queue, the close guard, the switch back on open,
-moving stray strokes off T. None is needed when T is never made current behind the user's back.
+Each of our actions is one **group** of n steps on top of xochitl's history:
 
-## Agreed next design (not built yet)
+| Action | n |
+|---|---|
+| Conversion | 2, plus 3-4 when T was made |
+| Add text object | 1, plus 3-4 when T was made |
+| Edit | 2 |
+| Our layer switch | 1 + the group under it if that is still on top, else 2 (with the step before it), or 1 at the start of the history |
 
-From the developer's decisions on the merged plan (Fable draft + independent review):
-- **Fail-safe chains.** T is created before the handwriting is deleted, so a conversion is always A, B and its undo or
-  redo needs exactly one extra step. That step is sent synchronously inside `aboutToUndo`/`aboutToRedo`, and only
-  while an in-memory arm set by the conversion is valid; any other activity disarms it. A missed chain costs one
-  press; a wrong one at most one step.
-- **Our layer switches are never steps of their own.** The layer change still happens, but one press undoes or
-  redoes it together with the content step next to it. Our switches (a double tap to T, a tool pick back to L) are
-  armed the same way, and while armed the extra step is sent synchronously. Unarmed, the switch stays one step.
-- **T current ⇒ the selection tool**, whatever the cause, also when a page opens on T; this is the base of object
-  mode (dashed boxes, tap to edit, drag, lasso multi-select).
-- **Per-object boxes** for the double tap from L (after probing for a per-layer read); a tap where objects overlap
-  shows a short "objects overlap" message instead of editing.
-- **Rename of T is not blocked.**
+How a press is handled:
+- A press (button or gesture) while a group is on top: the other n - 1 steps are sent **inside**
+  `aboutToUndo`/`aboutToRedo`, and the group moves to the other side (undone or redone).
+- Our own calls are told by a re-entrancy count.
+- **A group is on top only while nothing else happened.** A pen stroke, a move or resize, typed text, another page, or
+  a press that was not one of ours marks all groups unknown.
+- An undo also compares the page with the fingerprint taken after the group (page, layer names and order, current
+  layer, its strokes, typed text length).
+- Unknown means a plain single step: fail-safe, the worst case is one press too many, never steps destroyed.
+- A press while something is selected only ends the selection (xochitl); the groups stay.
 
-## Undo and redo
-
-All in `aboutToUndoRedo` (edit.h), for every undo and redo (toolbar buttons and gestures):
-
-1. **Ours?** Our own `undo()`/`redo()` calls are counted (each emits the signal once) and skipped.
-2. **The newest conversion on the page the step starts from:**
-   - T conversion, undo from its result (a layer other than T current, as right after it; never by a stored layer index:
-     undoing a conversion can remove T and move L down): `steps + 1` more undos right behind;
-   - T conversion, redo from its start: `steps + 1` more redos right behind;
-   - a conversion or edit on the current layer (an object on L, or an edit on T while T is current): the one-layer
-     chain of #6/#15 (result -> neither -> one more step; resent only if the page did not change at all).
-   Sent right behind the user's step, not after seeing it: waiting showed the state between (handwriting gone, no
-   object yet) as if it were a step of its own.
-3. **Layer change only:** a user's undo or redo after which the current layer changed (a double tap's switch to T, or
-   the switch back when a tool was chosen) is followed by **exactly one** more step the same way (through 2, so a
-   conversion or edit there goes in one press). One more, never a loop: the worst case is one extra step.
-
-**We push steps only as part of the user's own action**: a conversion, a double tap, choosing a tool on T.
+Removed: hidden selections, S1/S2 pairs, settle loops, the press queue, the close guard, the open fallback, stray
+moving, matching conversions by the page's strokes, every timing window.
 
 ## Bugs found on the device, and fixes
 
@@ -164,6 +155,7 @@ All in `aboutToUndoRedo` (edit.h), for every undo and redo (toolbar buttons and 
 | a59a3c3e | A conversion stayed plain strokes on Layer 1 | A stray stroke was being taken out of the new ink's selection when the copies were made (97 instead of 96) | Grouping waits until the take-out is done |
 | a59a3c3e | Redo of a conversion took 4 presses | Undoing the conversion also removed the Text objects layer it made, so the user's layer index moved down; the redo check compared the stored index | The user's layer is any layer but T, not a stored index |
 | 6ad906ef | The tool switched to the selection tool while writing | Touches while writing (a palm, a resting finger) counted as a double tap, and the tool was switched before looking for an object | Nothing changes unless the tap is on a known object; large contacts ignored; object boxes kept across restarts |
+| a59a3c3e (S') | Chains, boxes and switches still drifted (independent review) | Matching a conversion by the page's strokes fires when it is not on top; observe-then-send paths; time windows | Groups with activity tracking and a page fingerprint; chains sent inside the signal; T made before the handwriting is deleted |
 | a05db063 | Nothing improved: undo stopped or skipped around selections | The pair bookkeeping (where our switches sit in xochitl's unseen history) drifted with pending undos, edits in sessions and fast presses | Design (S'): no hidden switching at all |
 
 **Known limits.** After a conversion the object is not selected (it is moved after a double tap, or in object mode).
@@ -173,23 +165,25 @@ object takes a double tap there first. Objects follow typed text like ink (stock
 ## Testing a build
 
 On a fresh notebook:
-1. Write with the pen at once: the tool stays, the ink goes to Layer 1.
-2. Convert handwriting: the object appears unselected; the layers menu shows Text objects below Layer 1 (no up,
-   down or merge; delete there).
-3. Undo once: the handwriting is back, selected; redo once: the object is back. No step in between.
-4. More strokes, then fast undos and redos (button and gesture): one step per press, redo never cut.
-5. Finger double tap on the object (pen tool and selection tool): Text objects becomes current, the edit box opens.
-6. Close the edit box, choose the pen: Layer 1 current again; writing goes there.
-7. Undo after 5-6: one press takes the switch back together with the step before it; the edit is one undo.
-8. Pick Text objects in the layers menu: the selection tool turns on; choose the pen: back to Layer 1.
+1. Write with the pen at once: ink on Layer 1.
+2. Convert handwriting: the object appears unselected; the layers menu shows Text objects below Layer 1.
+3. One undo: the handwriting is back (and the layer it made is gone); one redo: the object is back.
+4. Strokes, then fast undos and redos (button and gesture): one step per press past the conversion's group.
+5. Finger double tap on the object (any tool): Text objects current, selection tool, edit box.
+6. Cancel the edit box, choose the pen: Layer 1 current again; one undo goes back past both switches together with
+   the step before them.
+7. Edit an object, choose the pen, undo: the edit and the switch in one press.
+8. Delete Text objects in the layers menu, convert again: a new one at the bottom.
+9. A tap where two objects overlap: the overlap message.
 
 ## Log lines (`journalctl -u xochitl | grep rmpp-textobj`)
 
-- `text layer: moveLayer(int,int)`, `text layer: added (layer 1, user's layer 2)`: the layer made at the bottom.
-- `new ink: N strokes in one undo step ..., on the text layer`: B done.
-- `undo: conversion undone in one step (text layer, N step(s) more)` / `redo: ... redone ...`: the conversion chain.
-- `undo changed only the current layer: one more`: the layer-change rule.
-- `double tap seen at x, y`, `an undo/redo gesture, left alone`, `no text object near it`, `to the text layer for
-  the object there`, `selecting a text object`, `edit: ...`: the double tap path.
-- `text layer: picked by the user`, `another tool chosen on it: layer N current for writing`, `the page opened on
-  it: left as it is`: object mode.
+- `text layer: moveLayer(int,int)`, `text layer: added (layer 1)`: the layer made at the bottom.
+- `convert: the handwriting could not be selected again`: the conversion stopped before deleting anything.
+- `new ink: N strokes in one undo step ..., on the text layer`, `one press: a group of N step(s)`: a group.
+- `undo: N step(s) in one press` / `redo: ...`: a group undone or redone.
+- `one press: <why>: groups dropped`: activity, the next presses are plain.
+- `double tap seen at x, y`, `not on a text object`, `to the text layer for the object there`, `selecting a text
+  object`, `edit: ...`: the double tap path.
+- `text layer: another tool chosen on it`, `the page opened on it: the selection tool`: T current.
+- `put lines: ...`: why rmpp-hwr's call did not make an object.
