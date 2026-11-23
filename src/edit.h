@@ -222,26 +222,44 @@ const char *stateName(ConvState s) {
 }
 
 // Once the user's undo (redo) is applied, from the conversion's result to neither side on the page: one more step.
-// An undo right after a selection ends is ignored (an undo while the new object is still selected ends the
-// selection first), so the extra step is checked and sent again, up to 3 times.
-void afterUndoRedo(bool undo, LastConv c, int tries = 0, int sent = 0) {
+// An undo right after a selection ends is ignored: an undo while the new object is still selected only ends the
+// selection, so it is sent again (wasSelected); the extra step is checked and sent again too, up to 3 times. At the
+// end the side that came back is selected, as after the conversion itself (undo: the handwriting; redo: the object).
+void selectSide(QObject *sc, const QSet<QString> &keys) {
+    QPointer<QObject> scp(sc);
+    const bool switched = useSelectionTool();
+    QTimer::singleShot(switched ? 500 : 0, sc, [scp, keys] {
+        if (!scp) return;
+        const QList<QRect> all = pageLineRects(scp);
+        QList<int> want;
+        for (int i = 0; i < all.size(); ++i) if (keys.contains(rectKey(all[i]))) want << i;
+        setSelection(scp, all, want, {});
+    });
+}
+
+void afterUndoRedo(bool undo, LastConv c, bool wasSelected, int tries = 0, int sent = 0) {
     QString page;
     QObject *sc = pageScene(&page);
     if (!sc || page != c.page) return;
     const ConvState st = convState(sc, c);
     const ConvState from = undo ? ConvState::Result : ConvState::Start, to = undo ? ConvState::Start : ConvState::Result;
     if (sent == 0 && st == from) {   // the user's step not applied yet
-        if (tries < 15) QTimer::singleShot(200, qApp, [undo, c, tries] { afterUndoRedo(undo, c, tries + 1); });
+        if (wasSelected && tries == 3 && sc->property("selectionItemCount").toInt() == 0) {
+            ownUndoRedo(sc, undo);
+            TLOG("%s: only the selection ended: sent again", undo ? "undo" : "redo");
+        }
+        if (tries < 15) QTimer::singleShot(200, qApp, [undo, c, wasSelected, tries] { afterUndoRedo(undo, c, wasSelected, tries + 1); });
         else TLOG("%s: the page did not change in 3 s: left as is", undo ? "undo" : "redo");
         return;
     }
     if (st == ConvState::Neither && sent < 3) {
         ownUndoRedo(sc, undo);
         TLOG("%s: conversion %s in one step%s", undo ? "undo" : "redo", undo ? "undone" : "redone", sent ? " (sent again)" : "");
-        QTimer::singleShot(800, qApp, [undo, c, sent] { afterUndoRedo(undo, c, 0, sent + 1); });
+        QTimer::singleShot(800, qApp, [undo, c, sent] { afterUndoRedo(undo, c, false, 0, sent + 1); });
         return;
     }
-    if (sent == 0 || st != to) TLOG("%s: after the step the conversion is %s", undo ? "undo" : "redo", stateName(st));
+    if (st == to) selectSide(sc, undo ? c.hand : c.obj);
+    else TLOG("%s: after the step the conversion is %s", undo ? "undo" : "redo", stateName(st));
 }
 
 // Every undo and redo, from the toolbar buttons, the two-finger tap gesture or anything else, goes through the
@@ -275,8 +293,9 @@ void aboutToUndoRedo(bool undo) {
             if (here == 1) TLOG("%s: the newest conversion on this page is at its %s", undo ? "undo" : "redo", stateName(st));
             continue;
         }
-        TLOG("%s from a conversion's %s", undo ? "undo" : "redo", stateName(st));
-        QTimer::singleShot(300, qApp, [undo, c] { afterUndoRedo(undo, c); });
+        const bool sel = sc->property("selectionItemCount").toInt() > 0;
+        TLOG("%s from a conversion's %s%s", undo ? "undo" : "redo", stateName(st), sel ? " (selected)" : "");
+        QTimer::singleShot(300, qApp, [undo, c, sel] { afterUndoRedo(undo, c, sel); });
         return;
     }
     if (here == 0 && !g_convs.isEmpty()) TLOG("%s: no conversion remembered on this page", undo ? "undo" : "redo");
