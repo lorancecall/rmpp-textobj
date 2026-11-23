@@ -12,7 +12,7 @@ ArkControls.FoldoutItem {
     Layout.fillWidth: true
     label: "Add text object"
     focusPolicy: Qt.NoFocus   // keeps the edit box's text field the focus item (else typing goes nowhere)
-    iconSource: "qrc:/ark/icons/ballpoint_tip"
+    iconSource: tobjIcon
     onClicked: tobj.command = "addtext#" + Date.now()
 }
 )QML";
@@ -133,6 +133,38 @@ void placeTextObject(double x, double y) {
     showInkEditBox(dv, e, QStringLiteral("Add text object"), QString(), 1);
 }
 
+// The text-object icon: xochitl's own convert icon ("aa") inside a dashed selection box, composed at run time from
+// the icon in xochitl's resources (no reMarkable artwork shipped). The same composition as rmpp-hwr's lasso convert
+// icon (ui/hwrui.cpp inkIconUrl), so the two look alike. Written to our data folder, created first: it does not exist
+// on a fresh install (rmpp-hwr#15).
+QString textObjectIconUrl() {
+    static QString url;
+    if (!url.isEmpty()) return url;
+    QFile in(QStringLiteral(":/ark/icons/hwc"));
+    QDir().mkpath(QLatin1String(kDataDir));
+    const QString out = QLatin1String(kDataDir) + QStringLiteral("/textobj_icon.svg");
+    QString svg;
+    if (in.open(QIODevice::ReadOnly)) {
+        const QString src = QString::fromUtf8(in.readAll());
+        const int a = src.indexOf(QLatin1Char('>'), src.indexOf(QLatin1String("<svg"))) + 1;
+        const int b = src.lastIndexOf(QLatin1String("</svg>"));
+        if (a > 0 && b > a)
+            svg = QStringLiteral("<svg width=\"48\" height=\"48\" viewBox=\"0 0 48 48\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">"
+                                 "<rect x=\"2\" y=\"4\" width=\"44\" height=\"40\" stroke=\"black\" stroke-width=\"2.5\" "
+                                 "stroke-dasharray=\"5 3.5\" fill=\"none\"/><g transform=\"translate(8.5 7.5) scale(0.64)\">")
+                  + src.mid(a, b - a) + QStringLiteral("</g></svg>");
+    }
+    QFile f(out);
+    if (!svg.isEmpty() && f.open(QIODevice::WriteOnly) && f.write(svg.toUtf8()) > 0) {
+        f.close();
+        url = out;   // xochitl's Icon takes a plain path (a file:// URL is "not found")
+    } else {
+        url = QStringLiteral("qrc:/ark/icons/ballpoint_tip");
+        TLOG("text object icon: could not write %s", qPrintable(out));
+    }
+    return url;
+}
+
 // The typing (T) tool menu: our entry right under xochitl's "Add text" (labelled "Edit text" on a page with text).
 void tryInjectAddText() {
     QQuickItem *menu = findAnywhere([](QQuickItem *i) { return i->objectName() == QLatin1String("typingMenu"); });
@@ -146,6 +178,7 @@ void tryInjectAddText() {
     col->setProperty("_rmppTextobj", true);
     auto *ctx = new QQmlContext(base, col);
     ctx->setContextProperty(QStringLiteral("tobj"), g_state);
+    ctx->setContextProperty(QStringLiteral("tobjIcon"), textObjectIconUrl());
     auto *item = qobject_cast<QQuickItem *>(createInline(eng, ctx, kAddTextItemQml, "AddTextObject", col));
     if (item) item->stackAfter(add);
     TLOG("typing menu: add text object %s", item ? "added" : "FAILED");
