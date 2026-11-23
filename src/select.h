@@ -368,16 +368,22 @@ bool viewToPage(QQuickItem *dv, const QPointF &p, QPointF *out);
 // selected already, edit it. Not found on the current layer: looked for on the Text objects layer (layer.h), made
 // current for it (onText); nothing there either: the user's layer comes back (the session ends unselected).
 void doubleTapNow(double x, double y, bool onText = false) {
-    if (g_edit.box || putting() || adjusting()) { if (onText) textSessionSelected(); return; }
+    if (g_edit.box || putting() || adjusting()) {
+        TLOG("double tap: busy (edit box %d, putting %d, adjusting %d)", g_edit.box ? 1 : 0, putting() ? 1 : 0, adjusting() ? 1 : 0);
+        if (onText) textSessionSelected();
+        return;
+    }
     if (!selectionToolActive()) {   // another tool: the selection tool first (selecting needs it)
-        if (useSelectionTool()) QTimer::singleShot(500, qApp, [x, y, onText] { doubleTapNow(x, y, onText); });
+        const bool switched = useSelectionTool();
+        TLOG("double tap: the selection tool %s", switched ? "turned on" : "could not be turned on");
+        if (switched) QTimer::singleShot(500, qApp, [x, y, onText] { doubleTapNow(x, y, onText); });
         else if (onText) textSessionSelected();
         return;
     }
     QQuickItem *dv = documentView();
     QObject *sc = dv ? dv->property("sceneController").value<QObject *>() : nullptr;
     QPointF at;
-    if (!sc || !viewToPage(dv, QPointF(x, y), &at)) return;
+    if (!sc || !viewToPage(dv, QPointF(x, y), &at)) { TLOG("double tap: no page point"); return; }
     const QString pageId = dv->property("currentPageId").toString();
     const QList<QRect> sel = lineRects(sc);
     if (!sel.isEmpty()) upgradeLegacy(sc, pageId, sel);
@@ -438,6 +444,7 @@ void doubleTapNow(double x, double y, bool onText = false) {
 // double tap too, and starting a selection then cleared the redo history (device, 0d009cd3): wait a moment, and it
 // is not a double tap if an undo or redo came with it.
 void doubleTapAt(double x, double y) {
+    TLOG("double tap seen at %.0f, %.0f", x, y);
     QTimer::singleShot(450, qApp, [x, y] {
         if (g_anyUserStep.isValid() && g_anyUserStep.elapsed() < 900) { TLOG("double tap: an undo/redo gesture, left alone"); return; }
         doubleTapNow(x, y);
