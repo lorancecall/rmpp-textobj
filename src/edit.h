@@ -165,6 +165,9 @@ Rectangle {
                 focus: true
                 onCursorRectangleChanged: flick.ensureVisible(cursorRectangle)
                 onTextChanged: typing.restart()
+                // a cursor that does not blink: each blink was a screen update (about twice a second, as long as
+                // the box is open), which on e-paper flickers (#9)
+                cursorDelegate: Rectangle { width: 3; color: "black"; visible: input.activeFocus }
                 Component.onCompleted: { forceActiveFocus(); cursorPosition = text.length; Qt.inputMethod.show(); shade.refresh(); }
             }
         }
