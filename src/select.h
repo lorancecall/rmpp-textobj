@@ -377,22 +377,24 @@ void installTapOverlay() {
 // A point in DocumentView coordinates -> page coordinates (addtext.h viewToPage).
 bool viewToPage(QQuickItem *dv, const QPointF &p, QPointF *out);
 
-// Double tap at x, y (DocumentView coordinates) with the selection tool: select the text object there; if it is
-// selected already, edit it. Not found on the current layer: looked for on the Text objects layer (layer.h), made
-// current for it (onText); nothing there either: the user's layer comes back (the session ends unselected).
+// Double tap at x, y (DocumentView coordinates) with the selection tool: select the text object there and edit it.
+// Not found on the current layer but one of the Text objects layer's is there (layer.h): that layer is made current,
+// a step the user sees (onText), and the object is selected and edited there.
 bool textObjectMaybeAt(const QString &page, const QPointF &at);   // layer.h
+void textLayerSeen();                                              // layer.h
+void setLayer(QObject *sc, int i);                                 // layer.h
 
 void doubleTapNow(double x, double y, bool onText = false) {
     if (g_edit.box || putting() || adjusting()) {
         TLOG("double tap: busy (edit box %d, putting %d, adjusting %d)", g_edit.box ? 1 : 0, putting() ? 1 : 0, adjusting() ? 1 : 0);
-        if (onText) textSessionSelected();
+        if (onText) textLayerSeen();
         return;
     }
     if (!selectionToolActive()) {   // another tool: the selection tool first (selecting needs it)
         const bool switched = useSelectionTool();
         TLOG("double tap: the selection tool %s", switched ? "turned on" : "could not be turned on");
         if (switched) QTimer::singleShot(500, qApp, [x, y, onText] { doubleTapNow(x, y, onText); });
-        else if (onText) textSessionSelected();
+        else if (onText) textLayerSeen();
         return;
     }
     QQuickItem *dv = documentView();
@@ -417,11 +419,13 @@ void doubleTapNow(double x, double y, bool onText = false) {
     }
     if (!hit) {
         const int t = textLayer(sc), cur = sc->property("currentLayer").toInt();
-        if (onText) { TLOG("double tap: no text object here on the text layer either"); textSessionSelected(); }
-        else if (t >= 0 && t != cur && !textSessionActive()) {
+        if (onText) { TLOG("double tap: no text object here on the text layer either"); textLayerSeen(); }
+        else if (t >= 0 && t != cur) {
             if (!textObjectMaybeAt(pageId, at)) { TLOG("double tap: no text object near it"); return; }
             g_lastDoubleTap.start();
-            startTextSession(QPointer<QObject>(sc), pageId, cur, t, [x, y] { doubleTapNow(x, y, true); });
+            TLOG("double tap: to the text layer for the object there");
+            setLayer(sc, t);
+            QTimer::singleShot(300, qApp, [x, y] { doubleTapNow(x, y, true); });
         }
         return;
     }
@@ -438,7 +442,7 @@ void doubleTapNow(double x, double y, bool onText = false) {
         QPointer<QObject> scp(sc);
         selectRect(sc, hit->box.toAlignedRect().adjusted(-2, -2, 2, 2), 0);
         QTimer::singleShot(250, sc, [scp] {
-            textSessionSelected();
+            textLayerSeen();
             if (scp && scp->property("selectionItemCount").toInt() > 0) editSelectedObjects(true);
         });
         return;
@@ -450,7 +454,7 @@ void doubleTapNow(double x, double y, bool onText = false) {
     const QList<int> members = hit->members;
     QTimer::singleShot(250, sc, [scp, dvp, rects, members, pageId] {
         setSelection(scp, rects, members, [scp, dvp, pageId] {
-            textSessionSelected();   // on the Text objects layer: what is there now
+            textLayerSeen();   // on the Text objects layer: what is there now
             // a stroke drawn across the object encloses some of its strokes and cannot be left out: editing would
             // delete it too, so say so (the edit needs the object alone, or with its marks)
             if (!scp || !dvp) return;

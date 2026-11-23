@@ -278,8 +278,6 @@ void textobjInit() {
         watchUndoRedo();
         watchLayers();
         watchLayersMenu();
-        watchCloseButton();
-        checkTextSession();
         installTapOverlay();
         closeStaleInkEdit();
         closeStaleAddPlace();

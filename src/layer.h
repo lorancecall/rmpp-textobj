@@ -1,16 +1,13 @@
 // ---- the Text objects layer (#3) ----
-// Text objects live on a layer of their own ("Text objects"), so writing and erasing on the user's layer never touch
-// them. The user does not see the layer change: a new object is added to that layer while the user's layer stays
-// current, then the Text objects layer is made current only while the object is selected (a selection on another
-// layer is dropped by xochitl), and the user's layer comes back when the selection ends.
-//
-// Every layer change is an undo step in xochitl (addLayer, setLayerName and setCurrentLayer alike, OS 3.29.1), so:
-// - the switch to the Text objects layer (S1) is made after the object is added (B): when the selection ends with
-//   the object untouched, undoing S1 takes back only the switch, and the history is as on one layer;
-// - when the object was moved or resized, the switch back is a step of its own (S2);
-// - after an undo or redo, while the Text objects layer is current (and the user did not pick it in the layers
-//   menu), one more step the same way (settleLayer): undo = S2, the moves and S1 together; redo likewise.
-// The conversion's own chain (handwriting back in one undo) is in edit.h (layerConvStep).
+// Text objects live on a layer of their own ("Text objects", at the bottom), so writing and erasing on the user's
+// layer never touch them. docs/text-layer.md has the why. In short (design S', after hidden layer switching kept
+// leaking into undo and redo): every layer change is an undo step in xochitl and cannot be hidden, so the layer is
+// only made current by the user's own action:
+// - a conversion adds the object to the Text objects layer while the user's layer stays current (unselected);
+// - a finger double tap on an object makes that layer current (a step the user sees), selects and edits it;
+// - on that layer, choosing a pen, eraser or text tool makes the user's writing layer current again;
+// - an undo or redo that only changes the current layer is followed by one more (edit.h layerChangeCheck).
+// Nothing is done when a page opens.
 
 const char *kTextLayerName = "Text objects";
 
@@ -27,6 +24,13 @@ int textLayer(QObject *sc) {
     return -1;
 }
 
+// The user's writing layer: the topmost layer that is not the Text objects layer.
+int writingLayer(QObject *sc) {
+    const int t = textLayer(sc);
+    for (int i = sc->property("layerCount").toInt() - 1; i >= 0; --i) if (i != t) return i;
+    return -1;
+}
+
 bool layerApi(QObject *sc) {
     const QMetaObject *mo = sc ? sc->metaObject() : nullptr;
     return mo && mo->indexOfMethod("addLayer()") >= 0 && mo->indexOfMethod("setLayerName(int,QString)") >= 0
@@ -38,6 +42,12 @@ QElapsedTimer g_ownLayerChange;   // our own layer changes (not the user picking
 void setLayer(QObject *sc, int i) {
     g_ownLayerChange.start();
     QMetaObject::invokeMethod(sc, "setCurrentLayer", Q_ARG(int, i));
+}
+
+QSet<QString> layerKeys(QObject *sc) {
+    QSet<QString> keys;
+    for (const QRect &r : pageLineRects(sc)) keys.insert(rectKey(r));
+    return keys;
 }
 
 // moveLayer's signature is not known from QML; found here (logged once): (int, int) is taken as (from, to).
@@ -56,8 +66,9 @@ int moveLayerMethod(QObject *sc) {
 }
 
 // The Text objects layer of the page, made if there is none: addLayer (on top, made current), its name, moved to
-// the bottom (below the user's layers, as xochitl's Text row is: developer, 8798ea08), and the user's layer current
-// again; four undo steps, undone with the conversion (LastConv::steps). done(layer, steps, the user's layer now).
+// the bottom (below the user's layers, as xochitl's Text row is), the user's layer current again; four undo steps,
+// undone with the conversion (LastConv::steps). The move is checked: not where expected, the layer is taken as found.
+// done(layer, steps, the user's layer now).
 void ensureTextLayer(QPointer<QObject> scp, int home, std::function<void(int, int, int)> done) {
     const int t = textLayer(scp);
     if (t >= 0) { done(t, 0, home); return; }
@@ -93,8 +104,8 @@ void ensureTextLayer(QPointer<QObject> scp, int home, std::function<void(int, in
                 QTimer::singleShot(400, scp, [scp, text, h, steps, done] {
                     if (!scp) return;
                     const int t2 = textLayer(scp), cur = scp->property("currentLayer").toInt();
-                    const bool ok = t2 == text && cur == h;
-                    TLOG("text layer: %s (layer %d, user's layer %d)", ok ? "added" : "NOT where expected", t2 + 1, cur + 1);
+                    TLOG("text layer: %s (layer %d, user's layer %d)", t2 == text && cur == h ? "added" : "NOT where expected",
+                         t2 + 1, cur + 1);
                     if (t2 < 0 || cur == t2) { done(-1, steps, h); return; }
                     done(t2, steps, cur);
                 });
@@ -103,209 +114,35 @@ void ensureTextLayer(QPointer<QObject> scp, int home, std::function<void(int, in
     });
 }
 
-// The time the Text objects layer is current for a selection there.
-struct LayerSession {
-    QPointer<QObject> sc;
-    QString page;
-    int home = -1, text = -1;
-    QSet<QString> start;   // the layer's strokes once the selection is made (untouched: the same at the end)
-    bool active = false, selecting = false;
-    int pending = 0;       // an undo (1) or redo (2) asked for while the object was selected
-    int objects = -1;      // text objects found on the layer at the start (strays are moved only if none is lost)
-    bool forConv = false;  // the selection right after a conversion (its pair is remembered with it)
-    QElapsedTimer since;
-};
-LayerSession g_ls;
-
-QSet<QString> layerKeys(QObject *sc) {
-    QSet<QString> keys;
-    for (const QRect &r : pageLineRects(sc)) keys.insert(rectKey(r));
-    return keys;
-}
-
-// S1: the Text objects layer current (after the object was added there), then `select` (on that layer).
-void startTextSession(QPointer<QObject> scp, const QString &page, int home, int text, std::function<void()> select) {
-    g_ls = LayerSession{};
-    g_ls.sc = scp;
-    g_ls.page = page;
-    g_ls.home = home;
-    g_ls.text = text;
-    g_ls.active = g_ls.selecting = true;
-    g_ls.since.start();
-    setLayer(scp, text);
-    QTimer::singleShot(250, scp, [scp, select] {
-        if (!scp || !g_ls.active) return;
-        if (select) select();
-    });
-}
-
-int objectCount(QObject *sc);
-
-// Once the selection on the Text objects layer is made: what is there now (to tell a move at the end).
-// Where the objects on the Text objects layer were when it was last current, per page (read at the start and end of
-// each selection there): a double tap far from all of them does not switch there just to look (a switch is a step).
+// Where the objects on the Text objects layer are, per page: from conversions, and read whenever that layer is
+// current. A double tap far from all of them does not make that layer current (a step) just to look.
 QHash<QString, QList<QRectF>> g_textBoxes;
-void rememberTextBoxes(QObject *sc);
 
-void textSessionSelected() {
-    if (!g_ls.active || !g_ls.sc) return;
-    g_ls.start = layerKeys(g_ls.sc);
-    g_ls.objects = objectCount(g_ls.sc);
-    rememberTextBoxes(g_ls.sc);
-    g_ls.selecting = false;
-    TLOG("text layer: object selected (%lld strokes on the layer)", (long long)g_ls.start.size());
+void rememberTextBox(const QString &page, const QRectF &box) { g_textBoxes[page] << box; }
+
+void textLayerSeen() {
+    QQuickItem *dv = documentView();
+    QObject *sc = dv ? dv->property("sceneController").value<QObject *>() : nullptr;
+    const QString page = dv ? dv->property("currentPageId").toString() : QString();
+    if (!sc || page.isEmpty() || sc->property("currentLayer").toInt() != textLayer(sc)) return;
+    QList<QRectF> boxes;
+    for (const Placement &p : findObjects(sc, page, false).found) boxes << p.box;
+    g_textBoxes[page] = boxes;
 }
 
-void afterPendingStep(bool undo);   // edit.h
-
-// The selection ended: the user's layer back (S2). A move is applied a moment after the selection ends, so the
-// layer is compared 600 ms later.
-void moveStraysThenSwitch(QPointer<QObject> scp, int text, int home);
-int strayCount(QObject *sc);
-
-// Every selection on the Text objects layer leaves two steps in the history: the switch there (S1) and the switch
-// back (S2), with whatever was done in between. Untouched, the pair changes nothing the user sees: an undo or redo
-// that meets it goes on through it to the user's own step (settleLayer -> leftTextLayer). Undoing S1 instead (the
-// earlier way) left it in the redo history: the redo button came on after a mere tap outside (developer, cb57b732).
-// The pairs in history order; g_pairIdx of them are done (not undone).
-QList<bool> g_pairs;   // true: untouched (the user sees nothing)
-int g_pairIdx = 0;
-
-void pushPair(bool untouched) {
-    while (g_pairs.size() > g_pairIdx) g_pairs.removeLast();   // a new step cut the redo history
-    g_pairs << untouched;
-    ++g_pairIdx;
-    if (g_pairs.size() > 200) { g_pairs.removeFirst(); --g_pairIdx; }
+bool textObjectMaybeAt(const QString &page, const QPointF &at) {
+    if (!g_textBoxes.contains(page)) return true;   // not known yet
+    for (const QRectF &b : g_textBoxes.value(page)) if (b.adjusted(-60, -60, 60, 60).contains(at)) return true;
+    return false;
 }
 
-void endTextSession() {
-    QObject *sc = g_ls.sc;
-    g_ls.active = false;
-    if (!sc) return;
-    const int home = g_ls.home, text = g_ls.text, pending = g_ls.pending, objects = g_ls.objects;
-    const bool forConv = g_ls.forConv;
-    const QSet<QString> start = g_ls.start;
-    QPointer<QObject> scp(sc);
-    QTimer::singleShot(600, qApp, [scp, home, text, pending, start, objects, forConv] {
-        QObject *sc = scp;
-        if (!sc) return;
-        if (sc->property("currentLayer").toInt() != text) { TLOG("text layer: ended on another layer"); return; }
-        // a stroke written on it (a pen right after a tool change): to the user's layer; only if every object is
-        // still found (an object not recognized after an edit would look like strays)
-        if (strayCount(sc) > 0 && objects >= 0 && objectCount(sc) >= objects) {
-            pushPair(false);
-            if (forConv) convPairDone(g_pairIdx);
-            moveStraysThenSwitch(scp, text, home);
-            if (pending) QTimer::singleShot(2500, qApp, [pending] { afterPendingStep(pending == 1); });
-            return;
-        }
-        const bool untouched = layerKeys(sc) == start && !start.isEmpty();
-        if (!untouched) rememberTextBoxes(sc);
-        pushPair(untouched);
-        if (forConv) convPairDone(g_pairIdx);
-        setLayer(sc, home);
-        TLOG("text layer: back to layer %d (%s)", home + 1, untouched ? "untouched: an undo or redo passes through" : "object changed");
-        if (pending) QTimer::singleShot(500, qApp, [pending] { afterPendingStep(pending == 1); });
-    });
-}
-
-bool textSessionActive() { return g_ls.active; }
-void markSessionForConv() { g_ls.forConv = true; }
-
-// An undo or redo while the object is selected there: xochitl only ends the selection; it is applied once the
-// user's layer is back (endTextSession).
-bool textSessionPending(bool undo) {
-    if (!g_ls.active) return false;
-    g_ls.pending = undo ? 1 : 2;
-    TLOG("%s while selected on the text layer: after the selection ends", undo ? "undo" : "redo");
-    return true;
-}
-
-void checkTextSession() {
-    if (!g_ls.active) return;
-    QObject *sc = g_ls.sc;
-    if (!sc) { g_ls.active = false; return; }
-    if (g_ls.selecting) {
-        if (g_ls.since.elapsed() > 4000) { TLOG("text layer: nothing selected"); g_ls.start = layerKeys(sc); g_ls.selecting = false; }
-        else return;
-    }
-    if (sc->property("selectionItemCount").toInt() > 0 || g_edit.box || putting() || adjusting()) return;
-    endTextSession();
-}
-
-// After an undo or redo: while the Text objects layer is current outside a selection there (and not picked by the
-// user), one more step the same way, until the user's layer is current.
-bool g_userTextLayer = false;   // the user picked the Text objects layer (layers menu)
-
-// One settle at a time (several ran at once and took several steps for one press: developer, cb57b732); presses
-// meanwhile are queued like during a conversion's chain (edit.h chainPress).
-bool g_settling = false;
-
-void settleLayer(bool undo, int n) {
-    QString page;
-    QObject *sc = pageScene(&page);
-    if (n == 0 && g_settling) return;
-    auto stop = [] { g_settling = false; chainEnd(); };
-    if (!sc || g_ls.active || g_userTextLayer) { if (n > 0) stop(); return; }
-    const int t = textLayer(sc);
-    if (t < 0 || sc->property("currentLayer").toInt() != t) {
-        if (n > 0) {
-            stop();
-            TLOG("text layer: %d more %s step(s) to leave it", n, undo ? "undo" : "redo");
-            bool untouched = false;   // the pair just passed
-            if (undo && g_pairIdx > 0) untouched = g_pairs.value(--g_pairIdx);
-            else if (!undo && g_pairIdx < g_pairs.size()) untouched = g_pairs.value(g_pairIdx++);
-            if (untouched) {
-                TLOG("text layer: an untouched selection passed: the %s goes on", undo ? "undo" : "redo");
-                QTimer::singleShot(300, qApp, [undo] { userStep(undo, true); });
-            }
-        }
-        return;
-    }
-    // Only through a pair of switches we made (S2 ... S1): with none on record in that direction, the layer is current
-    // for another reason and nothing is undone or redone for it (20 undos per press ate a notebook's history:
-    // developer, 5a45c7d7). Bounded: a pair holds the switches and what the user did while selected.
-    const bool pair = undo ? g_pairIdx > 0 : g_pairIdx < g_pairs.size();
-    if (!pair) {
-        if (n > 0) stop();
-        TLOG("text layer: current, but no selection of ours to pass: left as it is");
-        return;
-    }
-    if (n >= 8) { TLOG("text layer: still current after 8 steps: left as it is"); stop(); return; }
-    if (!undo && !sc->property("redoAvailable").toBool()) { TLOG("text layer: nothing more to redo"); stop(); return; }
-    if (undo && !sc->property("undoAvailable").toBool()) { TLOG("text layer: nothing more to undo"); stop(); return; }
-    if (n == 0) {
-        g_settling = true;
-        if (!g_chain.active) chainStart(undo, 0);
-    }
-    ownUndoRedo(sc, undo);
-    QTimer::singleShot(400, qApp, [undo, n] { settleLayer(undo, n + 1); });
-}
-
-// The user changed the current layer (layers menu): picking the Text objects layer is the user's own choice.
-
-void enterObjectMode();
-
-void layerChanged() {
-    QString page;
-    QObject *sc = pageScene(&page);
-    if (!sc) return;
-    if ((g_ownLayerChange.isValid() && g_ownLayerChange.elapsed() < 1500) || (g_ownUndo.isValid() && g_ownUndo.elapsed() < 2500)
-        || (g_userStepAt.isValid() && g_userStepAt.elapsed() < 3000) || g_ls.active)
-        return;
-    const bool on = sc->property("currentLayer").toInt() == textLayer(sc);
-    if (on != g_userTextLayer) TLOG("text layer: %s by the user", on ? "picked" : "left");
-    g_userTextLayer = on;
-    if (on) enterObjectMode();
-}
-
-// The Text objects layer picked by the user: object mode. The selection tool is turned on; choosing another tool
-// (pen, eraser, text) while that layer is current makes the user's writing layer current first, so ink never goes
-// onto the Text objects layer (developer, 1ae3249f). The switch is a step the user started (by picking the tool).
+// The Text objects layer current: object mode. The selection tool is turned on when the user picks it (not when a
+// page opens on it); choosing another tool (pen, eraser, text) makes the writing layer current, a step the user
+// started by choosing the tool, so ink never goes onto the Text objects layer.
 QPointer<QTimer> g_objectMode;
 QPointer<QQuickItem> g_objectModeTool;   // the tool when the watch started: only a change of tool counts
 
-void enterObjectModeWatch() {
+void watchObjectMode() {
     g_objectModeTool = activeToolButton();
     if (!g_objectMode) {
         g_objectMode = new QTimer(qApp);
@@ -314,16 +151,15 @@ void enterObjectModeWatch() {
             QString page;
             QObject *sc = pageScene(&page);
             const int t = textLayer(sc);
-            if (!sc || t < 0 || sc->property("currentLayer").toInt() != t || !g_userTextLayer) { g_objectMode->stop(); return; }
+            if (!sc || t < 0 || sc->property("currentLayer").toInt() != t) { g_objectMode->stop(); return; }
             QQuickItem *tool = activeToolButton();
             if (tool == g_objectModeTool) return;
             g_objectModeTool = tool;
-            if (selectionToolActive() || !tool) return;
-            int home = -1;
-            for (int i = sc->property("layerCount").toInt() - 1; i >= 0; --i) if (i != t) { home = i; break; }
+            if (selectionToolActive() || !tool || g_edit.box) return;
+            const int home = writingLayer(sc);
             g_objectMode->stop();
             if (home < 0) return;
-            g_userTextLayer = false;
+            textLayerSeen();
             setLayer(sc, home);
             TLOG("text layer: another tool chosen on it: layer %d current for writing", home + 1);
         });
@@ -331,102 +167,20 @@ void enterObjectModeWatch() {
     g_objectMode->start();
 }
 
-// Picked in the layers menu: the selection tool too. A page that opens on it: only the watch (nothing on open).
-void enterObjectMode() {
-    useSelectionTool();
-    QTimer::singleShot(300, qApp, [] { enterObjectModeWatch(); });   // after the tool switch, so it is not taken for a change
-}
-
-void enterObjectModeWatchOnly() { enterObjectModeWatch(); }
-
-// Strokes on the Text objects layer that are not part of a text object (nor a mark on one): written there while
-// that layer was current by mistake (a page opened on it, developer's "테" on 0e3040b5). Moved to the user's layer
-// (copied there in one step, deleted here in one), then that layer is made current.
-QList<int> strayIndexes(QObject *sc, PageObjects *out) {
-    QQuickItem *dv = documentView();
-    const QString pageId = dv ? dv->property("currentPageId").toString() : QString();
-    *out = findObjects(sc, pageId, false);
-    QSet<int> keep;
-    for (const Placement &p : out->found) {
-        for (int m : p.members) if (m >= 0) keep.insert(m);
-        for (int i = 0; i < out->rects.size(); ++i) if (isMark(*out, p, i)) keep.insert(i);
-    }
-    QList<int> strays;
-    for (int i = 0; i < out->rects.size(); ++i) if (!keep.contains(i)) strays << i;
-    return strays;
-}
-
-void rememberTextBoxes(QObject *sc) {
-    QQuickItem *dv = documentView();
-    const QString page = dv ? dv->property("currentPageId").toString() : QString();
-    if (page.isEmpty()) return;
-    QList<QRectF> boxes;
-    for (const Placement &p : findObjects(sc, page, false).found) boxes << p.box;
-    g_textBoxes[page] = boxes;
-}
-
-// Could a text object of the Text objects layer be at `at`: no boxes known for the page yet, or one near it.
-bool textObjectMaybeAt(const QString &page, const QPointF &at) {
-    if (!g_textBoxes.contains(page)) return true;
-    for (const QRectF &b : g_textBoxes.value(page)) if (b.adjusted(-60, -60, 60, 60).contains(at)) return true;
-    return false;
-}
-
-int objectCount(QObject *sc) {
-    QQuickItem *dv = documentView();
-    return int(findObjects(sc, dv ? dv->property("currentPageId").toString() : QString(), false).found.size());
-}
-
-int strayCount(QObject *sc) {
-    PageObjects po;
-    return int(strayIndexes(sc, &po).size());
-}
-
-void moveStraysThenSwitch(QPointer<QObject> scp, int text, int home) {
-    QObject *sc = scp;
+void layerChanged() {
+    QString page;
+    QObject *sc = pageScene(&page);
     if (!sc) return;
-    PageObjects po;
-    const QList<int> strays = strayIndexes(sc, &po);
-    if (strays.isEmpty()) { setLayer(sc, home); return; }
-    if (!selectionToolActive()) {   // never a tool switch for it
-        TLOG("text layer: %lld stroke(s) on it are not text objects: left (the selection tool is not on)", (long long)strays.size());
-        setLayer(sc, home);
-        return;
+    const int t = textLayer(sc);
+    if (t < 0 || sc->property("currentLayer").toInt() != t) return;
+    textLayerSeen();
+    const bool ours = g_ownLayerChange.isValid() && g_ownLayerChange.elapsed() < 1500;
+    const bool step = g_ownUndo.isValid() && g_ownUndo.elapsed() < 1500;
+    if (!ours && !step && !(g_anyUserStep.isValid() && g_anyUserStep.elapsed() < 1500)) {
+        TLOG("text layer: picked by the user");
+        useSelectionTool();
     }
-    TLOG("text layer: %lld stroke(s) on it are not text objects: moved to layer %d", (long long)strays.size(), home + 1);
-    QTimer::singleShot(0, sc, [scp, po, strays, text, home] {
-        if (!scp) return;
-        setSelection(scp, po.rects, strays, [scp, text, home, n = int(strays.size())] {
-            QObject *sc = scp;
-            if (!sc) return;
-            if (sc->property("selectionItemCount").toInt() != n) {   // not exactly the strays: nothing moved
-                TLOG("text layer: the strays were not selected (%d of %d): left", sc->property("selectionItemCount").toInt(), n);
-                QMetaObject::invokeMethod(sc, "clearSelectedItems");
-                setLayer(sc, home);
-                return;
-            }
-            const QMetaObject *mo = sc->metaObject();
-            const int clone = mo->indexOfMethod("cloneSelectedItems(int,double)");
-            const int bound = mo->indexOfMethod("getItemBoundingRect(QList<std::shared_ptr<SceneItem>>)");
-            const int add = mo->indexOfMethod("cloneAddAndSelectItems(int,QList<std::shared_ptr<SceneItem>>,double,QPointF)");
-            if (clone < 0 || bound < 0 || add < 0 || sc->property("selectionItemCount").toInt() <= 0) { setLayer(sc, home); return; }
-            int lay = text;
-            double scale = 1.0;
-            QList<std::shared_ptr<void>> items;
-            void *a1[] = {&items, &lay, &scale};
-            sc->qt_metacall(QMetaObject::InvokeMetaMethod, clone, a1);
-            QRectF box;
-            void *a2[] = {&box, &items};
-            sc->qt_metacall(QMetaObject::InvokeMetaMethod, bound, a2);
-            QMetaObject::invokeMethod(sc, "deleteSelectedItems", Q_ARG(int, text));
-            QMetaObject::invokeMethod(sc, "clearSelectedItems");
-            int to = home;
-            QPointF centre = box.center();
-            void *a3[] = {nullptr, &to, &items, &scale, &centre};
-            sc->qt_metacall(QMetaObject::InvokeMetaMethod, add, a3);
-            QTimer::singleShot(300, sc, [scp, home] { if (scp) setLayer(scp, home); });
-        });
-    });
+    QTimer::singleShot(400, qApp, [] { watchObjectMode(); });   // after a tool switch, so it is not taken for a change
 }
 
 void watchLayers() {
@@ -434,43 +188,30 @@ void watchLayers() {
     QObject *sc = dv ? dv->property("sceneController").value<QObject *>() : nullptr;
     if (!sc || sc->property("_rmppTextobjLayers").toBool()) return;
     const int sig = sc->metaObject()->indexOfSignal("currentLayerChanged()");
-    const int sel = sc->metaObject()->indexOfSignal("selectionItemCountChanged()");
-    if (sig < 0 || sel < 0) return;
+    if (sig < 0) return;
     sc->setProperty("_rmppTextobjLayers", true);
-    g_userTextLayer = false;
-    g_pairs.clear();   // a new document: a new history
-    g_pairIdx = 0;
-    // Nothing is done when a page opens (no layer switch, no tool switch, no strokes moved): a page that opens on the
-    // Text objects layer is treated as the user's pick, so no undo or redo is ever chained for it. Acting here (an
-    // automatic switch back that also moved strokes with the lasso) broke a notebook (developer, 5a45c7d7).
+    // nothing on open: a page that opens on the Text objects layer gets only the watch for another tool
     QPointer<QObject> scp(sc);
     QTimer::singleShot(3000, qApp, [scp] {
-        if (!scp || g_ls.active) return;
+        if (!scp) return;
         const int t = textLayer(scp);
         if (t >= 0 && scp->property("currentLayer").toInt() == t) {
-            g_userTextLayer = true;
-            TLOG("text layer: the page opened on it: left as it is (the user's layer)");
-            if (!g_objectMode || !g_objectMode->isActive()) {   // no tool switch on open: only watch for another tool
-                enterObjectModeWatchOnly();
-            }
+            TLOG("text layer: the page opened on it: left as it is");
+            watchObjectMode();
         }
     });
     auto *hook = new SignalHook;
     hook->setParent(sc);
     hook->fn = [] { QTimer::singleShot(0, qApp, [] { layerChanged(); }); };
     QMetaObject::connect(sc, sig, hook, QObject::staticMetaObject.methodCount(), Qt::DirectConnection, nullptr);
-    auto *hook2 = new SignalHook;
-    hook2->setParent(sc);
-    hook2->fn = [] { if (g_ls.active) QTimer::singleShot(150, qApp, [] { checkTextSession(); }); };
-    QMetaObject::connect(sc, sel, hook2, QObject::staticMetaObject.methodCount(), Qt::DirectConnection, nullptr);
 }
 
-// The Text objects layer in the layers menu is fixed, as xochitl's own Text layer is (developer, #3): no move up or
-// down, no merge, no delete, no rename (its buttons hidden, its name field read-only); the layer below it cannot
-// move up past it, and the layer above it cannot move down or merge into it.
-// The row's own switches (layerMoveUpEnabled...) are not changed: xochitl rebuilds a row's buttons when they change,
-// and Layer 1's arrows vanished and came back (developer, cb57b732). Only the buttons are touched: hidden on the
-// Text objects row, disabled in place (they look the same as xochitl's disabled ones) on its neighbours.
+// ---- the layers menu ----
+// The Text objects row: no move up or down, no merge, no rename; delete stays (developer: it must be deletable). The
+// layer below it cannot move up past it, the one above it cannot move down or merge into it. Only the button items are
+// touched (hidden on the row, disabled in place on its neighbours): changing a row's layer*Enabled switches made
+// xochitl rebuild its buttons (they flickered). Applied before every frame for 4 s after the layers button is
+// pressed, so nothing shows for a frame.
 void forEachAction(QQuickItem *row, const std::function<void(QQuickItem *, const QString &)> &fn) {
     QList<QQuickItem *> stack{row};
     while (!stack.isEmpty()) {
@@ -493,7 +234,10 @@ void lockTextLayerRows() {
     for (QQuickItem *r : rows) {
         const int i = r->property("layerIndex").toInt();
         if (i == t) {
-            forEachAction(r, [](QQuickItem *b, const QString &) { if (b->isVisible()) b->setVisible(false); });
+            forEachAction(r, [](QQuickItem *b, const QString &k) {
+                if ((k == QLatin1String("up") || k == QLatin1String("down") || k == QLatin1String("merge")) && b->isVisible())
+                    b->setVisible(false);
+            });
             if (QObject *in = r->property("textInput").value<QObject *>()) if (!in->property("readOnly").toBool()) in->setProperty("readOnly", true);
         } else if (i == t - 1) {   // just below: moving it up would move the Text objects layer down
             forEachAction(r, [](QQuickItem *b, const QString &k) { if (k == QLatin1String("up") && b->isEnabled()) b->setEnabled(false); });
@@ -505,9 +249,6 @@ void lockTextLayerRows() {
     }
 }
 
-// Applied before every frame (QQuickWindow::afterAnimating, GUI thread, before the scene is synced) for a while
-// after the layers button is pressed, so the rows never show their buttons (applied after creation, they showed for a
-// moment: developer, e10a6f86).
 QElapsedTimer g_layersMenuPressed;
 
 void watchLayersMenu() {
@@ -529,34 +270,4 @@ void watchLayersMenu() {
             if (g_layersMenuPressed.isValid() && g_layersMenuPressed.elapsed() < 4000) lockTextLayerRows();
         }, Qt::DirectConnection);
     }
-}
-
-// The document closing (its close button pressed) while the Text objects layer is current and not picked by the
-// user (an object selected there): the user's layer current first, so the page is not saved on that layer (then it
-// opened there next time: the cause of the developer's "테" on 0e3040b5).
-void closeGuard() {
-    QString page;
-    QObject *sc = pageScene(&page);
-    if (!sc || g_userTextLayer) return;
-    const int t = textLayer(sc);
-    if (t < 0 || sc->property("currentLayer").toInt() != t) return;
-    int home = g_ls.active ? g_ls.home : -1;
-    if (home < 0) for (int i = sc->property("layerCount").toInt() - 1; i >= 0; --i) if (i != t) { home = i; break; }
-    if (home < 0) return;
-    g_ls.active = false;
-    QMetaObject::invokeMethod(sc, "clearSelectedItems");
-    setLayer(sc, home);
-    TLOG("text layer: the document closes: layer %d current first", home + 1);
-}
-
-void watchCloseButton() {
-    QQuickItem *b = findAnywhere([](QQuickItem *i) { return i->objectName() == QLatin1String("close-documentview-button") && i->isVisible(); });
-    if (!b || b->property("_rmppTextobjClose").toBool()) return;
-    const int sig = b->metaObject()->indexOfSignal("pressed()");
-    if (sig < 0) return;
-    b->setProperty("_rmppTextobjClose", true);
-    auto *hook = new SignalHook;
-    hook->setParent(b);
-    hook->fn = [] { closeGuard(); };
-    QMetaObject::connect(b, sig, hook, QObject::staticMetaObject.methodCount(), Qt::DirectConnection, nullptr);
 }
