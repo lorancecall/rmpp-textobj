@@ -21,6 +21,7 @@ QList<QList<QPointF>> inkAndBands(const Placed &pl, const QList<Hl> &hls) {
 // handwriting back, so that one undo undoes the conversion (watchUndoRedo); a redo likewise. Newest last.
 struct LastConv { QString page; QSet<QString> obj, hand; };
 QList<LastConv> g_convs;
+void ownUndoRedo(QObject *sc, bool undo, int times = 1);   // below: our own undo()/redo() calls
 
 // One undo step for new ink (#6). addDrawingLine makes an undo step per stroke (a conversion took ~28 undos to
 // bring the handwriting back); SceneController::cloneAddAndSelectItems adds a list of items as one step, centred on a
@@ -65,7 +66,7 @@ void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k, cons
             return;
         }
         if (fresh != 0 || kept != before.size()) {   // not exactly the new ink undone: put everything back
-            for (int i = 0; i < k; ++i) QMetaObject::invokeMethod(sc, "redo");
+            ownUndoRedo(sc, false, k);
             TLOG("one undo step: the undo did not match (%d new, %d of %lld kept): redone, left as is", fresh, kept,
                  (long long)before.size());
             return;
@@ -89,7 +90,7 @@ void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k, cons
     };
     QTimer::singleShot(400, sc, [scp, k, check] {
         if (!scp) return;
-        for (int i = 0; i < k; ++i) QMetaObject::invokeMethod(scp, "undo");
+        ownUndoRedo(scp, true, k);
         QTimer::singleShot(200, scp, [check] { (*check)(0); });
     });
 }
@@ -187,7 +188,7 @@ void putInk(QPointer<QObject> scp, QPointer<QObject> php, QPointer<QQuickItem> d
     });
 }
 
-// One undo for a conversion or edit (g_convs): the toolbar's undo and redo buttons. Only when the click starts from a
+// One undo for a conversion or edit (g_convs): every undo and redo (aboutToUndoRedo). Only when the undo starts from a
 // conversion's result (undo: its new ink on the page, its handwriting not) and ends with neither on the page, one
 // more undo brings the handwriting back; redo likewise from the handwriting. Undoing further (the handwriting's own
 // strokes) is left alone. A moved or resized object is not its recorded new ink any more: undoing the move first
@@ -226,58 +227,48 @@ void afterUndoRedo(bool undo, LastConv c, int tries = 0) {
         return;
     }
     if (st == ConvState::Neither) {
-        QMetaObject::invokeMethod(sc, undo ? "undo" : "redo");
+        ownUndoRedo(sc, undo);
         TLOG("%s: conversion %s in one step", undo ? "undo" : "redo", undo ? "undone" : "redone");
     }
 }
 
-// The conversion an undo or redo click starts from, found when the button is pressed: by the time clicked() comes,
-// xochitl has already applied the undo.
-bool g_undoPending = false;
-LastConv g_undoConv;
-QElapsedTimer g_undoPressed;
+// Every undo and redo, from the toolbar buttons, the two-finger tap gesture or anything else, goes through the
+// scene controller, which emits aboutToUndo()/aboutToRedo() before applying it: the conversion it starts from is
+// found then, and looked at again once it is applied. Our own undo() and redo() calls (groupNewInk, the extra step
+// below) are left out.
+QElapsedTimer g_ownUndo;   // started when we call undo()/redo() ourselves
 
-void undoRedoPressed(bool undo) {
-    g_undoPending = false;
+void ownUndoRedo(QObject *sc, bool undo, int times) {
+    g_ownUndo.start();
+    for (int i = 0; i < times; ++i) QMetaObject::invokeMethod(sc, undo ? "undo" : "redo");
+}
+
+void aboutToUndoRedo(bool undo) {
+    if (putting() || (g_ownUndo.isValid() && g_ownUndo.elapsed() < 2500)) return;
     QString page;
     QObject *sc = pageScene(&page);
     if (!sc) return;
-    for (int i = int(g_convs.size()) - 1; i >= 0; --i) {   // the newest conversion the click starts from
+    for (int i = int(g_convs.size()) - 1; i >= 0; --i) {   // the newest conversion the undo starts from
         const LastConv &c = g_convs[i];
         if (c.page != page) continue;
         if (convState(sc, c) != (undo ? ConvState::Result : ConvState::Start)) continue;
-        g_undoConv = c;
-        g_undoPending = true;
-        g_undoPressed.start();
+        QTimer::singleShot(300, qApp, [undo, c] { afterUndoRedo(undo, c); });
         return;
     }
 }
 
-void undoRedoClicked(bool undo) {
-    if (!g_undoPending || g_undoPressed.elapsed() > 3000) return;
-    g_undoPending = false;
-    const LastConv c = g_undoConv;
-    QTimer::singleShot(300, qApp, [undo, c] { afterUndoRedo(undo, c); });
-}
-
 void watchUndoRedo() {
-    for (const char *name : {"undoButton", "redoButton"}) {
-        QQuickItem *b = findAnywhere([name](QQuickItem *i) { return i->objectName() == QLatin1String(name); });
-        QQuickItem *btn = b ? findItem(b, [](QQuickItem *i) {
-            return i->metaObject()->indexOfSignal("clicked()") >= 0 && i->metaObject()->indexOfSignal("pressed()") >= 0; }) : nullptr;
-        if (!btn || btn->property("_rmppTextobjUndo").toBool()) continue;
-        btn->setProperty("_rmppTextobjUndo", true);
-        const bool undo = qstrcmp(name, "undoButton") == 0;
-        auto *press = new SignalHook;
-        press->setParent(btn);
-        press->fn = [undo] { undoRedoPressed(undo); };
-        QMetaObject::connect(btn, btn->metaObject()->indexOfSignal("pressed()"), press, QObject::staticMetaObject.methodCount(),
-                             Qt::DirectConnection, nullptr);
-        auto *click = new SignalHook;
-        click->setParent(btn);
-        click->fn = [undo] { undoRedoClicked(undo); };
-        QMetaObject::connect(btn, btn->metaObject()->indexOfSignal("clicked()"), click, QObject::staticMetaObject.methodCount(),
-                             Qt::DirectConnection, nullptr);
+    QQuickItem *dv = documentView();
+    QObject *sc = dv ? dv->property("sceneController").value<QObject *>() : nullptr;
+    if (!sc || sc->property("_rmppTextobjUndo").toBool()) return;
+    const int su = sc->metaObject()->indexOfSignal("aboutToUndo()"), sr = sc->metaObject()->indexOfSignal("aboutToRedo()");
+    if (su < 0 || sr < 0) { TLOG("no aboutToUndo()/aboutToRedo(): one undo for a conversion is off"); return; }
+    sc->setProperty("_rmppTextobjUndo", true);
+    for (const bool undo : {true, false}) {
+        auto *hook = new SignalHook;
+        hook->setParent(sc);
+        hook->fn = [undo] { aboutToUndoRedo(undo); };
+        QMetaObject::connect(sc, undo ? su : sr, hook, QObject::staticMetaObject.methodCount(), Qt::DirectConnection, nullptr);
     }
 }
 
