@@ -130,30 +130,56 @@ void appendLine(Placed *out, const QString &text, const QPointF &origin, double 
     }
 }
 
-// Recognized lines ("x0 y0 x1 y1<TAB>text") as glyph strokes: each line at the size of its handwriting, either over
-// the original line (replace) or stacked below the selection.
+// The sizes a converted object can have (em, scene units; 40 is about xochitl's body text). Handwriting is never the
+// same size twice, so a size taken from it straight made every object a little different (issue #7).
+double lineWidth(const QString &text);
+
+const double kEmSteps[] = {28, 40, 52, 68, 88, 116};
+
+double snapEm(double h) {
+    double best = kEmSteps[0];
+    for (double s : kEmSteps)
+        if (std::abs(std::log(h / s)) < std::abs(std::log(h / best))) best = s;
+    return best;
+}
+
+// Recognized lines ("x0 y0 x1 y1<TAB>text") as glyph strokes, either over the original lines (replace) or stacked
+// below the selection. One size for the whole object: the size of its longest line's handwriting, snapped to
+// kEmSteps.
 Placed placeLines(const QStringList &lines, const QRectF &sel, bool replace) {
     Placed out;
     QString all;
-    for (const QString &l : lines) all += l.section(QLatin1Char('\t'), 1);
+    for (const QString &l : lines) all += l.section(QLatin1Char('	'), 1);
     useGlyphLanguage(all);
-    double yNext = sel.bottom() + 20;
+    struct In { QRectF b; QString text; };
+    QList<In> ins;
+    double h0 = 0;
+    int longest = -1;
     for (const QString &l : lines) {
-        const QStringList box = l.section(QLatin1Char('\t'), 0, 0).split(QLatin1Char(' '));
-        const QString text = l.section(QLatin1Char('\t'), 1);
+        const QStringList box = l.section(QLatin1Char('	'), 0, 0).split(QLatin1Char(' '));
+        const QString text = l.section(QLatin1Char('	'), 1);
         if (box.size() != 4 || blankText(text)) continue;
         const QRectF b(QPointF(box[0].toDouble(), box[1].toDouble()), QPointF(box[2].toDouble(), box[3].toDouble()));
-        QList<QList<QPointF>> tmp;
-        const double w = layoutLine(text, &tmp);
+        const double w = lineWidth(text);
         if (w <= 0) continue;
-        // em size from the line's ink height (Hangul ink is ~0.85 em), kept within +-15% of the original width
+        ins.append({b, text});
+        // the handwriting's size: its ink height (Hangul ink is ~0.85 em), kept within +-15% of its width
         double h = b.height() / 0.85;
         if (w * h > b.width() * 1.15) h = b.width() * 1.15 / w;
         if (w * h < b.width() * 0.85) h = qMin(b.width() * 0.85 / w, b.height() / 0.6);
-        const QPointF origin(b.left(), replace ? b.top() - 0.05 * h : yNext);
-        if (out.em == 0) { out.origin = origin; out.em = h; }
-        appendLine(&out, text, origin, h);
-        yNext = origin.y() + h * 1.15;
+        const int n = int(text.trimmed().size());
+        if (n > longest || (n == longest && h > h0)) { longest = n; h0 = h; }
+    }
+    if (ins.isEmpty()) return out;
+    const double em = snapEm(h0);
+    double yNext = replace ? -1e9 : sel.bottom() + 20;
+    for (const In &in : ins) {
+        // over the line it came from, but never into the previous line
+        const double y = replace ? qMax(in.b.center().y() - 0.5 * em, yNext) : yNext;
+        const QPointF origin(in.b.left(), y);
+        if (out.em == 0) { out.origin = origin; out.em = em; }
+        appendLine(&out, in.text, origin, em);
+        yNext = y + em * 1.15;
     }
     return out;
 }

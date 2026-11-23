@@ -82,7 +82,7 @@ bool viewToPage(QQuickItem *dv, const QPointF &p, QPointF *out) {
 }
 
 // The em size for a new object: the size the last new object was made at (its size in the edit box included), else
-// about the size of xochitl's body text. Not converted handwriting's: that follows the handwriting and is big.
+// about the size of xochitl's body text. Not converted handwriting's: that takes the step nearest the handwriting.
 double defaultTextObjectEm() {
     const double em = g_state->value(QStringLiteral("addTextEm")).toDouble();
     return em > 0 ? qBound(20.0, em, 200.0) : 40.0;
