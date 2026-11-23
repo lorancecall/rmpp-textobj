@@ -99,6 +99,22 @@ layers button is pressed, so nothing shows for a frame.
 Hidden selections and their S1/S2 pairs, the settle loop, the press queue, the close guard, the switch back on open,
 moving stray strokes off T. None is needed when T is never made current behind the user's back.
 
+## Agreed next design (not built yet)
+
+From the developer's decisions on the merged plan (Fable draft + independent review):
+- **Fail-safe chains.** T is created before the handwriting is deleted, so a conversion is always A, B and its undo or
+  redo needs exactly one extra step. That step is sent synchronously inside `aboutToUndo`/`aboutToRedo`, and only
+  while an in-memory arm set by the conversion is valid; any other activity disarms it. A missed chain costs one
+  press; a wrong one at most one step.
+- **Our layer switches are never steps of their own.** The layer change still happens, but one press undoes or
+  redoes it together with the content step next to it. Our switches (a double tap to T, a tool pick back to L) are
+  armed the same way, and while armed the extra step is sent synchronously. Unarmed, the switch stays one step.
+- **T current ⇒ the selection tool**, whatever the cause, also when a page opens on T; this is the base of object
+  mode (dashed boxes, tap to edit, drag, lasso multi-select).
+- **Per-object boxes** for the double tap from L (after probing for a per-layer read); a tap where objects overlap
+  shows a short "objects overlap" message instead of editing.
+- **Rename of T is not blocked.**
+
 ## Undo and redo
 
 All in `aboutToUndoRedo` (edit.h), for every undo and redo (toolbar buttons and gestures):
