@@ -221,9 +221,13 @@ void readTextBoxes(QObject *sc) {
 // How many of the Text objects layer's known objects are at `at` (0: none; 2 or more: they overlap there).
 int textObjectsAt(const QString &page, const QPointF &at, QRectF *box = nullptr) {
     loadTextBoxes();
-    QList<QRectF> hits;   // distinct boxes there (duplicates of one object counted once: a false overlap, 10cf412e)
+    // distinct boxes there (duplicates of one object counted once: a false overlap, 10cf412e); boxes that hold the
+    // point itself first, the 15 px margin only when none does (objects side by side, device 2351692b)
+    bool strict = false;
+    for (const QRectF &b : g_textBoxes.value(page)) if (b.contains(at)) strict = true;
+    QList<QRectF> hits;
     for (const QRectF &b : g_textBoxes.value(page)) {
-        if (!b.adjusted(-15, -15, 15, 15).contains(at)) continue;
+        if (!(strict ? b.contains(at) : b.adjusted(-15, -15, 15, 15).contains(at))) continue;
         bool dup = false;
         for (const QRectF &h : hits) if (sameBox(h, b)) dup = true;
         if (!dup) { hits << b; if (box) *box = b; }

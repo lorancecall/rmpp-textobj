@@ -432,9 +432,10 @@ void doubleTapNow(double x, double y, bool onText = false) {
         });
         return;
     }
-    {   // two or more objects here: which one is meant is not clear
+    {   // two or more objects right here: which one is meant is not clear (the 12 px margin alone is not an overlap:
+        // two objects side by side both have it at the gap, device 2351692b)
         int n = 0;
-        for (const Placement &p : po.found) if (p.box.adjusted(-12, -12, 12, 12).contains(at)) ++n;
+        for (const Placement &p : po.found) if (p.box.contains(at)) ++n;
         if (n > 1) { showHint(dv, QStringLiteral("Text objects overlap here.")); return; }
     }
     if (!selectionToolActive()) {   // on an object, another tool: the selection tool first (selecting needs it)
@@ -452,9 +453,16 @@ void doubleTapNow(double x, double y, bool onText = false) {
     // not selected, or selected with other handwriting: select this object alone
     g_lastDoubleTap.start();
     TLOG("double tap: selecting a text object (%d strokes)", hit->matched);
-    bool crossed = false;   // another object's strokes within this one's box: one rect would take them too
-    for (const Placement &p : po.found)
-        if (&p != hit && p.box.intersects(hit->box)) crossed = true;
+    // another object's strokes within this one's box: one rect would take them too. A stroke counts by its centre
+    // (boxes of objects side by side touch or overlap a little: every tap said "overlap", device 2351692b)
+    bool crossed = false;
+    const QRectF inner = hit->box.adjusted(2, 2, -2, -2);
+    for (const Placement &p : po.found) {
+        if (&p == hit) continue;
+        for (int m : p.members)
+            if (m >= 0 && m < po.rects.size() && inner.contains(QRectF(po.rects[m]).center())) { crossed = true; break; }
+        if (crossed) break;
+    }
     if (crossed && sc->property("currentLayer").toInt() == textLayer(sc)) {
         // selecting one of them stroke by stroke mixed their strokes (device, f1b714c2)
         showHint(dv, QStringLiteral("Text objects overlap here."));
