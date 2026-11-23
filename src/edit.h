@@ -341,22 +341,75 @@ void ownUndoRedo(QObject *sc, bool undo, int times) {
 // A conversion to the Text objects layer, seen from the user's layer: an undo from its result that leaves that
 // layer as it was took its new ink (B, on the other layer): the layer's creation steps and the handwriting's
 // deletion follow. A redo from its start that takes the handwriting away (A): the creation steps and B follow.
+// While our own steps follow a user's undo or redo (layerConvStep), more presses (button or gesture) must not race
+// with them (device, 4c8ab633: a quick second redo during a conversion's redo chain, and the history was cut). A
+// press in the chain's direction does one of the chain's steps; any other press is taken back at once and done
+// again, in order, once the chain is over (developer: "queue them, do them later").
+struct StepChain {
+    bool active = false, undo = false;
+    int need = 0;
+    QList<bool> queued;
+    QElapsedTimer since;
+};
+StepChain g_chain;
+void userStep(bool undo, bool send);
+
+void chainStart(bool undo, int need) {
+    g_chain.active = true;
+    g_chain.undo = undo;
+    g_chain.need = need;
+    g_chain.since.start();
+}
+
+void flushQueuedSteps() {
+    if (g_chain.active || g_chain.queued.isEmpty()) return;
+    const bool undo = g_chain.queued.takeFirst();
+    TLOG("%s pressed during a chain: done now", undo ? "undo" : "redo");
+    userStep(undo, true);
+    QTimer::singleShot(1200, qApp, [] { flushQueuedSteps(); });
+}
+
+void chainEnd() {
+    if (!g_chain.active) return;
+    g_chain.active = false;
+    g_chain.need = 0;
+    QTimer::singleShot(300, qApp, [] { flushQueuedSteps(); });
+}
+
+// A press while a chain runs: true if it was taken care of.
+bool chainPress(QObject *sc, bool undo) {
+    if (!g_chain.active) return false;
+    if (g_chain.since.elapsed() > 6000) { g_chain.active = false; return false; }
+    if (undo == g_chain.undo && g_chain.need > 0) {
+        --g_chain.need;
+        TLOG("%s pressed during the chain: one of its steps", undo ? "undo" : "redo");
+        return true;
+    }
+    ownUndoRedo(sc, !undo);   // taken back, done again later
+    g_chain.queued.append(undo);
+    TLOG("%s pressed during the chain: queued", undo ? "undo" : "redo");
+    return true;
+}
+
 void layerConvStep(bool undo, LastConv c, int tries = 0) {
     QString page;
     QObject *sc = pageScene(&page);
-    if (!sc || page != c.page) return;
-    if (sc->property("currentLayer").toInt() != c.home) { settleLayer(undo); return; }   // it took a layer step
+    if (!sc || page != c.page) { chainEnd(); return; }
+    if (sc->property("currentLayer").toInt() != c.home) { chainEnd(); settleLayer(undo); return; }   // a layer step
     const QSet<QString> keys = layerKeys(sc);
     if (undo) {
-        if (keys != c.lAfter) { TLOG("undo: the user's layer changed: not the conversion"); return; }
-        ownUndoRedo(sc, true, c.steps + 1);
-        TLOG("undo: conversion undone in one step (text layer, %d step(s) more)", c.steps + 1);
+        if (keys != c.lAfter) { chainEnd(); TLOG("undo: the user's layer changed: not the conversion"); return; }
+        const int n = g_chain.need;
+        g_chain.need = 0;
+        if (n > 0) ownUndoRedo(sc, true, n);
+        TLOG("undo: conversion undone in one step (text layer, %d step(s) more, %d by presses)", c.steps + 1, c.steps + 1 - n);
         QTimer::singleShot(1500, qApp, [c] {   // the handwriting back, selected as before the conversion
             QString page;
             QObject *sc = pageScene(&page);
+            chainEnd();
             if (!sc || page != c.page) return;
             if (!layerKeys(sc).contains(c.hand)) TLOG("undo: the handwriting is not all back");
-            else selectSide(sc, c.hand);
+            else if (g_chain.queued.isEmpty()) selectSide(sc, c.hand);
         });
         return;
     }
@@ -364,13 +417,20 @@ void layerConvStep(bool undo, LastConv c, int tries = 0) {
         QTimer::singleShot(200, qApp, [c, tries] { layerConvStep(false, c, tries + 1); });
         return;
     }
-    if (keys != c.lAfter) { TLOG("redo: the user's layer is not the conversion's result: left as is"); return; }
-    ownUndoRedo(sc, false, c.steps + 1);
-    TLOG("redo: conversion redone in one step (text layer, %d step(s) more)", c.steps + 1);
-    QTimer::singleShot(1500, qApp, [c] {   // the object selected, as after the conversion
+    if (keys != c.lAfter) { chainEnd(); TLOG("redo: the user's layer is not the conversion's result: left as is"); return; }
+    const int n = g_chain.need;
+    g_chain.need = 0;
+    if (n > 0) ownUndoRedo(sc, false, n);
+    TLOG("redo: conversion redone in one step (text layer, %d step(s) more, %d by presses)", c.steps + 1, c.steps + 1 - n);
+    QTimer::singleShot(1500, qApp, [c] {
+        // the object selected, as after the conversion; that is a layer switch, a new step, which would cut the
+        // redo history: only when nothing is left to redo
         QString page;
         QObject *sc = pageScene(&page);
+        const bool queued = !g_chain.queued.isEmpty();
+        chainEnd();
         if (!sc || page != c.page || textSessionActive() || sc->property("currentLayer").toInt() != c.home) return;
+        if (queued || sc->property("redoAvailable").toBool()) return;
         QPointer<QObject> scp(sc);
         const QRect sel = c.box.adjusted(-2, -2, 2, 2);
         startTextSession(scp, page, c.home, c.text, [scp, sel] {
@@ -404,6 +464,7 @@ void userStep(bool undo, bool send) {
             const QSet<QString> keys = layerKeys(sc);
             if (keys != (undo ? c.lAfter : c.lBefore)) continue;
             TLOG("%s from a conversion's %s (text layer)", undo ? "undo" : "redo", undo ? "result" : "start");
+            chainStart(undo, c.steps + 1);
             const LastConv cc = c;
             QTimer::singleShot(undo ? 600 : 300, qApp, [undo, cc] { layerConvStep(undo, cc); });
             if (send) ownUndoRedo(sc, undo);
@@ -438,6 +499,11 @@ void aboutToUndoRedo(bool undo) {
     if (g_ownSteps > 0 && g_ownUndo.isValid() && g_ownUndo.elapsed() < 3000) { --g_ownSteps; return; }
     g_ownSteps = 0;
     g_anyUserStep.start();
+    {
+        QString page;
+        QObject *sc = pageScene(&page);
+        if (sc && chainPress(sc, undo)) return;
+    }
     if (textSessionPending(undo)) return;
     userStep(undo, false);
 }
