@@ -223,20 +223,8 @@ const char *stateName(ConvState s) {
 
 // Once the user's undo (redo) is applied, from the conversion's result to neither side on the page: one more step.
 // An undo right after a selection ends is ignored: an undo while the new object is still selected only ends the
-// selection, so it is sent again (wasSelected); the extra step is checked and sent again too, up to 3 times. At the
-// end the side that came back is selected, as after the conversion itself (undo: the handwriting; redo: the object).
-void selectSide(QObject *sc, const QSet<QString> &keys) {
-    QPointer<QObject> scp(sc);
-    const bool switched = useSelectionTool();
-    QTimer::singleShot(switched ? 500 : 0, sc, [scp, keys] {
-        if (!scp) return;
-        const QList<QRect> all = pageLineRects(scp);
-        QList<int> want;
-        for (int i = 0; i < all.size(); ++i) if (keys.contains(rectKey(all[i]))) want << i;
-        setSelection(scp, all, want, {});
-    });
-}
-
+// selection, so it is sent again (wasSelected); the extra step is checked and sent again too, up to 3 times.
+// Nothing is selected afterwards: a selection would make the next undo only end it again.
 void afterUndoRedo(bool undo, LastConv c, bool wasSelected, int tries = 0, int sent = 0) {
     QString page;
     QObject *sc = pageScene(&page);
@@ -258,8 +246,7 @@ void afterUndoRedo(bool undo, LastConv c, bool wasSelected, int tries = 0, int s
         QTimer::singleShot(800, qApp, [undo, c, sent] { afterUndoRedo(undo, c, false, 0, sent + 1); });
         return;
     }
-    if (st == to) selectSide(sc, undo ? c.hand : c.obj);
-    else TLOG("%s: after the step the conversion is %s", undo ? "undo" : "redo", stateName(st));
+    if (st != to) TLOG("%s: after the step the conversion is %s", undo ? "undo" : "redo", stateName(st));
 }
 
 // Every undo and redo, from the toolbar buttons, the two-finger tap gesture or anything else, goes through the
