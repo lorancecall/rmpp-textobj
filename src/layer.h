@@ -234,7 +234,20 @@ void watchLayers() {
     const int sel = sc->metaObject()->indexOfSignal("selectionItemCountChanged()");
     if (sig < 0 || sel < 0) return;
     sc->setProperty("_rmppTextobjLayers", true);
-    g_userTextLayer = sc->property("currentLayer").toInt() == textLayer(sc) && textLayer(sc) >= 0;
+    g_userTextLayer = false;
+    // a page opened with the Text objects layer current (seen on the device, cause not found): the user's layer
+    // again, once the page has settled (no scene calls while a page loads: xochitl crashed then)
+    QPointer<QObject> scp(sc);
+    QTimer::singleShot(3000, qApp, [scp] {
+        if (!scp || g_ls.active || g_userTextLayer) return;
+        const int t = textLayer(scp), cur = scp->property("currentLayer").toInt(), n = scp->property("layerCount").toInt();
+        if (t < 0 || cur != t) return;
+        int home = -1;
+        for (int i = n - 1; i >= 0; --i) if (i != t) { home = i; break; }
+        if (home < 0) return;
+        setLayer(scp, home);
+        TLOG("text layer: the page opened on it: back to layer %d", home + 1);
+    });
     auto *hook = new SignalHook;
     hook->setParent(sc);
     hook->fn = [] { QTimer::singleShot(0, qApp, [] { layerChanged(); }); };

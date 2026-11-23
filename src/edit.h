@@ -307,7 +307,13 @@ void afterUndoRedo(bool undo, LastConv c, bool wasSelected, int tries = 0, int s
         else TLOG("%s: the page did not change in 3 s: left as is", undo ? "undo" : "redo");
         return;
     }
-    if (st == ConvState::Neither && sent < 3) {
+    // sent again only when the page did not change at all since the last send (the step was ignored): a step that
+    // did change it but left the conversion between its two states was another one, and sending more redid the
+    // user's later strokes (device, 595df1e8)
+    static QSet<QString> sentKeys;
+    const QSet<QString> nowKeys = layerKeys(sc);
+    if (st == ConvState::Neither && (sent == 0 || (sent < 3 && nowKeys == sentKeys))) {
+        sentKeys = nowKeys;
         ownUndoRedo(sc, undo);
         TLOG("%s: conversion %s in one step%s", undo ? "undo" : "redo", undo ? "undone" : "redone", sent ? " (sent again)" : "");
         QTimer::singleShot(800, qApp, [undo, c, sent] { afterUndoRedo(undo, c, false, 0, sent + 1); });
