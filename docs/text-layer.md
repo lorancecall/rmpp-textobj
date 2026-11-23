@@ -65,11 +65,13 @@ redo takes A, and the rest is sent right behind it.
   tool).
 - Left alone: taps on the toolbar strip (x < 130 while it is shown); a double tap with an undo or redo within 800 ms
   (the two- and three-finger gestures look like double taps), checked after 350 ms.
-- Any tool: the selection tool is turned on first.
-- An object on the current layer: selected, and its edit box opened.
-- Else, if T has an object near the tap (positions known from conversions and from whenever T is current): T is made
-  current, **a step the user sees** (the layers menu shows it), and the object is selected there (one rect: T holds
-  only objects) and its edit box opened. The edit is one undo step (the one-layer chain of #6/#15, T being current).
+- Large contacts (a palm, over 45 px) are not taps.
+- **Nothing changes (tool or layer) unless the double tap is on a text object.** An object on the current layer: the
+  selection tool is turned on if needed, the object selected and its edit box opened.
+- Else, if the tap is on one of T's objects (their boxes, known from conversions and from whenever T is current, kept
+  per page in `textlayer.json` so they hold after a restart): the selection tool on, T made current, **a step the user
+  sees** (the layers menu shows it), and the object is selected there (one rect: T holds only objects) and its edit
+  box opened. The edit is one undo step (the one-layer chain of #6/#15, T being current).
 
 ### Object mode (T current)
 
@@ -137,6 +139,7 @@ All in `aboutToUndoRedo` (edit.h), for every undo and redo (toolbar buttons and 
 | 5a45c7d7 | Notebook broken: lasso on open, writing went to T, Layer 1 could not be picked | Old page with T on top opened on T; the open fallback turned on the lasso and selected nothing; then every undo ran settle up to 20 steps, undoing the user's strokes and their own switch to Layer 1 | Nothing on open; settle bounded (both superseded by S') |
 | 1ae3249f | An extra step (handwriting gone, object not there yet) on redo, and on undo after more strokes | The chain waited to see the user's step before sending the rest | The rest sent right behind the user's step |
 | 1ae3249f | Pen ink went onto T when the user had picked it | Nothing kept the pen off T | Object mode |
+| 6ad906ef | The tool switched to the selection tool while writing | Touches while writing (a palm, a resting finger) counted as a double tap, and the tool was switched before looking for an object | Nothing changes unless the tap is on a known object; large contacts ignored; object boxes kept across restarts |
 | a05db063 | Nothing improved: undo stopped or skipped around selections | The pair bookkeeping (where our switches sit in xochitl's unseen history) drifted with pending undos, edits in sessions and fast presses | Design (S'): no hidden switching at all |
 
 **Known limits.** After a conversion the object is not selected (it is moved after a double tap, or in object mode).

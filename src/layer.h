@@ -116,23 +116,68 @@ void ensureTextLayer(QPointer<QObject> scp, int home, std::function<void(int, in
 
 // Where the objects on the Text objects layer are, per page: from conversions, and read whenever that layer is
 // current. A double tap far from all of them does not make that layer current (a step) just to look.
+// Kept in textlayer.json ({page: [[x, y, w, h], ...]}) so they hold after a restart (records have no page position).
 QHash<QString, QList<QRectF>> g_textBoxes;
+bool g_textBoxesLoaded = false;
 
-void rememberTextBox(const QString &page, const QRectF &box) { g_textBoxes[page] << box; }
+QString textBoxesPath() { return QLatin1String(kDataDir) + QStringLiteral("/textlayer.json"); }
+
+void loadTextBoxes() {
+    if (g_textBoxesLoaded) return;
+    g_textBoxesLoaded = true;
+    QFile f(textBoxesPath());
+    if (!f.open(QIODevice::ReadOnly)) return;
+    const QJsonObject o = QJsonDocument::fromJson(f.readAll()).object();
+    for (auto it = o.begin(); it != o.end(); ++it) {
+        QList<QRectF> boxes;
+        for (const QJsonValue &v : it.value().toArray()) {
+            const QJsonArray a = v.toArray();
+            if (a.size() == 4) boxes << QRectF(a[0].toDouble(), a[1].toDouble(), a[2].toDouble(), a[3].toDouble());
+        }
+        g_textBoxes.insert(it.key(), boxes);
+    }
+}
+
+void saveTextBoxes() {
+    QJsonObject o;
+    for (auto it = g_textBoxes.begin(); it != g_textBoxes.end(); ++it) {
+        QJsonArray boxes;
+        for (const QRectF &b : it.value()) boxes.append(QJsonArray{qRound(b.x()), qRound(b.y()), qRound(b.width()), qRound(b.height())});
+        o.insert(it.key(), boxes);
+    }
+    QDir().mkpath(QLatin1String(kDataDir));
+    QFile f(textBoxesPath() + QStringLiteral(".new"));
+    if (!f.open(QIODevice::WriteOnly)) return;
+    f.write(QJsonDocument(o).toJson(QJsonDocument::Compact));
+    f.close();
+    QFile::remove(textBoxesPath());
+    QFile::rename(textBoxesPath() + QStringLiteral(".new"), textBoxesPath());
+}
+
+void rememberTextBox(const QString &page, const QRectF &box) {
+    loadTextBoxes();
+    g_textBoxes[page] << box;
+    saveTextBoxes();
+}
 
 void textLayerSeen() {
     QQuickItem *dv = documentView();
     QObject *sc = dv ? dv->property("sceneController").value<QObject *>() : nullptr;
     const QString page = dv ? dv->property("currentPageId").toString() : QString();
     if (!sc || page.isEmpty() || sc->property("currentLayer").toInt() != textLayer(sc)) return;
+    loadTextBoxes();
     QList<QRectF> boxes;
     for (const Placement &p : findObjects(sc, page, false).found) boxes << p.box;
+    if (g_textBoxes.value(page) == boxes) return;
     g_textBoxes[page] = boxes;
+    saveTextBoxes();
 }
 
-bool textObjectMaybeAt(const QString &page, const QPointF &at) {
-    if (!g_textBoxes.contains(page)) return true;   // not known yet
-    for (const QRectF &b : g_textBoxes.value(page)) if (b.adjusted(-60, -60, 60, 60).contains(at)) return true;
+// Is `at` on a text object of the Text objects layer (one of the boxes known for the page)? A tap anywhere else does
+// nothing.
+bool textObjectAt(const QString &page, const QPointF &at) {
+    loadTextBoxes();
+    for (const QRectF &b : g_textBoxes.value(page)) if (b.adjusted(-20, -20, 20, 20).contains(at)) return true;
     return false;
 }
 
