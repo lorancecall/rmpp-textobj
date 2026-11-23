@@ -61,7 +61,7 @@ const char *kOldRecords = "/home/root/.local/share/rmpp-hwr/ink.json";  // rmpp-
 const char *kPkgDir = "/home/root/.vellum/share/rmpp-textobj";        // Vellum package: glyphs.json
 const char *kConf = "/home/root/.config/rmpp-textobj/settings.conf";
 
-// edit box state (inkText / inkWeight / inkSize / inkMissing), command (written by QML), addTextEm (setting)
+// edit box state (inkText / inkWeight / inkSize / inkMissing), command (written by QML)
 QQmlPropertyMap *g_state = nullptr;
 
 // ---- settings ----
@@ -70,10 +70,6 @@ void loadSettings() {
     if (g_confLoaded || !QFileInfo::exists(QStringLiteral("/home/root/.local"))) return;   // /home mounts late
     g_confLoaded = true;
     QSettings s(QLatin1String(kConf), QSettings::IniFormat);
-    double em = s.value(QStringLiteral("addTextEm"), 0.0).toDouble();
-    if (em <= 0) em = QSettings(QStringLiteral("/home/root/.config/rmpp-hwr/settings.conf"), QSettings::IniFormat)
-                          .value(QStringLiteral("addTextEm"), 0.0).toDouble();   // rmpp-hwr 0.4 test builds kept it
-    g_state->insert(QStringLiteral("addTextEm"), em);
     // highlighter strokes on text objects are replaced by bands snapped to the characters (src/highlight.h).
     // Off by default: selecting the highlighter stroke alone over the glyphs fails on the device (OS 3.29.1);
     // the highlight is still recorded and drawn as bands after an edit. v0.2: issue #3 (own layer).
@@ -258,7 +254,6 @@ void textobjInit() {
     g_state->insert(QStringLiteral("inkWeight"), 1);
     g_state->insert(QStringLiteral("inkSize"), 100);
     g_state->insert(QStringLiteral("inkMissing"), QString());
-    g_state->insert(QStringLiteral("addTextEm"), 0.0);
     QObject::connect(g_state, &QQmlPropertyMap::valueChanged, app, [](const QString &key, const QVariant &v) {
         if (key == QLatin1String("inkText")) { updateInkMissing(v.toString()); return; }
         if (key != QLatin1String("command")) return;

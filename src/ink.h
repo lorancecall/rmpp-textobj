@@ -137,16 +137,16 @@ const double kBodyEm = 31;
 
 double lineWidth(const QString &text);
 
-// The sizes a converted object can have, relative to the body text. An object starts at 100% unless its handwriting
-// is clearly bigger (or much smaller): handwriting is never the same size twice, and a size taken from it straight
-// made every object a little different (issue #7).
-const double kSizeSteps[] = {0.7, 1.0, 1.5, 2.0, 3.0};
+// The sizes a converted object can have, relative to the body text: the handwriting's size, snapped to the nearest
+// step, so a big handwriting gives a big object (shown as e.g. 150% in the edit box). Handwriting is never the same
+// size twice; a size taken from it straight made every object a little different (issue #7).
+const double kSizeSteps[] = {0.7, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0};
 
 double snapEm(double h) {
-    const double r = h / kBodyEm;
-    const double step = r < 0.6 ? kSizeSteps[0] : r < 1.6 ? kSizeSteps[1] : r < 2.4 ? kSizeSteps[2] : r < 3.4 ? kSizeSteps[3]
-                                                                                                         : kSizeSteps[4];
-    return kBodyEm * step;
+    double best = kSizeSteps[0];
+    for (double s : kSizeSteps)
+        if (std::abs(std::log(h / (kBodyEm * s))) < std::abs(std::log(h / (kBodyEm * best)))) best = s;
+    return kBodyEm * best;
 }
 
 // Recognized lines ("x0 y0 x1 y1<TAB>text") as glyph strokes, either over the original lines (replace) or stacked

@@ -395,7 +395,6 @@ bool applyInkEdit(const InkEdit &e) {
     if (pl.strokes.isEmpty()) return false;
     TLOG("%s: %s", e.create ? "add text object" : "edit", qPrintable(QString(text).replace(QLatin1Char('\n'), QLatin1String(" | "))));
     if (e.create) {
-        saveSetting(QStringLiteral("addTextEm"), em);   // the next new object starts at this size
         // selected and recorded like any new object: needs the selection tool (with the pen, selecting does nothing)
         const bool switchTool = useSelectionTool();
         QTimer::singleShot(switchTool ? 600 : 0, qApp, [e, pl, text] {
