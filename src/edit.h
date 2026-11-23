@@ -118,7 +118,7 @@ Item {
     property string title: "Edit text"
     property var penManager: null
     property int weight: 1        // 0 thin, 1 medium, 2 thick
-    property int sizePct: 100     // size of the ink, relative to now
+    property int sizePct: 100     // size of the ink, % of xochitl's body text (kBodyEm)
     property int rev: 0           // bumps the preview image
     function refresh() { tobj.inkText = input.text; tobj.inkWeight = weight; tobj.inkSize = sizePct; rev++; }
     onWeightChanged: refresh()
@@ -207,7 +207,7 @@ Rectangle {
         Item { width: 24; height: 1 }
         ArkControls.Button { text: "−"; type: ArkTokens.Button.secondary; onClicked: shade.sizePct = Math.max(50, shade.sizePct - 10) }
         Text { text: shade.sizePct + "%"; font.pixelSize: 32; width: 100; horizontalAlignment: Text.AlignHCenter; anchors.verticalCenter: parent.verticalCenter }
-        ArkControls.Button { text: "+"; type: ArkTokens.Button.secondary; onClicked: shade.sizePct = Math.min(200, shade.sizePct + 10) }
+        ArkControls.Button { text: "+"; type: ArkTokens.Button.secondary; onClicked: shade.sizePct = Math.min(400, shade.sizePct + 10) }
     }
     Row {
         x: parent.width - width - 36; y: 636; spacing: 24
@@ -240,6 +240,7 @@ struct InkEdit {
     QString joined;               // the text(s) when the box opened, as in the box
     QList<Hl> hls;                // highlights on them (ranges in joined): drawn again on the new text
     int underlines = 0;           // other marks (underlines) on the edited object(s): deleted with them
+    int pct0 = 100;               // the size when the box opened, % of xochitl's body text (kBodyEm)
 };
 InkEdit g_edit;
 
@@ -253,7 +254,7 @@ public:
         img.fill(Qt::white);
         if (size) *size = sz;
         if (!glyphsAvailable()) return img;
-        const double scale = qBound(50, g_state->value(QStringLiteral("inkSize")).toInt(), 200) / 100.0;
+        const double scale = qBound(50, g_state->value(QStringLiteral("inkSize")).toInt(), 400) / double(qMax(1, g_edit.pct0));
         const int weight = qBound(0, g_state->value(QStringLiteral("inkWeight")).toInt(), 2);
         const double em = g_edit.em * scale;
         const Placed pl = placeText(g_state->value(QStringLiteral("inkText")).toString().trimmed(), QPointF(12, 8), em,
@@ -292,11 +293,14 @@ void showInkEditBox(QQuickItem *dv, InkEdit e, const QString &title, const QStri
     QObject *pin = dv->property("penInput").value<QObject *>();
     QObject *mgr = pin ? pin->property("surfaceManager").value<QObject *>() : nullptr;
     if (!eng->imageProvider(QStringLiteral("rmpptextobj"))) eng->addImageProvider(QStringLiteral("rmpptextobj"), new InkPreviewProvider);
+    // the size control starts at the object's size in % of xochitl's body text, in steps of 10
+    e.pct0 = qBound(50, int(std::lround(e.em / kBodyEm * 10.0)) * 10, 400);
     g_edit = e;   // before the box: its preview reads em and maxW
     g_state->insert(QStringLiteral("inkMissing"), missingGlyphs(text));
     QObject *o = createWithState(dv, kEditQml, "InkEdit",
                                  {{QStringLiteral("initial"), text}, {QStringLiteral("penManager"), QVariant::fromValue(mgr)},
-                                  {QStringLiteral("weight"), weight}, {QStringLiteral("title"), title}});
+                                  {QStringLiteral("weight"), weight}, {QStringLiteral("title"), title},
+                                  {QStringLiteral("sizePct"), e.pct0}});
     if (!o) { g_edit = InkEdit{}; return; }
     g_edit.box = o;
     g_edit.dv = dv;
@@ -372,7 +376,7 @@ bool applyInkEdit(const InkEdit &e) {
     if (!e.sc || !e.ph || !e.dv || e.dv->property("currentPageId").toString() != e.page) return false;
     const QString text = g_state->value(QStringLiteral("inkText")).toString().trimmed();
     const int weight = qBound(0, g_state->value(QStringLiteral("inkWeight")).toInt(), 2);
-    const double size = qBound(50, g_state->value(QStringLiteral("inkSize")).toInt(), 200) / 100.0;
+    const double size = qBound(50, g_state->value(QStringLiteral("inkSize")).toInt(), 400) / double(qMax(1, e.pct0));
     if (!e.create && !e.text0.isEmpty() && text == e.text0 && weight == e.weight0 && qFuzzyCompare(size, 1.0))
         return false;   // nothing changed
     if (blankText(text)) {
@@ -394,7 +398,6 @@ bool applyInkEdit(const InkEdit &e) {
     if (pl.strokes.isEmpty()) return false;
     TLOG("%s: %s", e.create ? "add text object" : "edit", qPrintable(QString(text).replace(QLatin1Char('\n'), QLatin1String(" | "))));
     if (e.create) {
-        saveSetting(QStringLiteral("addTextEm"), em);   // the next new object starts at this size
         // selected and recorded like any new object: needs the selection tool (with the pen, selecting does nothing)
         const bool switchTool = useSelectionTool();
         QTimer::singleShot(switchTool ? 600 : 0, qApp, [e, pl, text] {
