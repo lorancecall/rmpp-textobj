@@ -376,17 +376,30 @@ void lockTextLayerRows() {
     }
 }
 
+// Applied before every frame (QQuickWindow::afterAnimating, GUI thread, before the scene is synced) for a while
+// after the layers button is pressed, so the rows never show their buttons (applied after creation, they showed for a
+// moment: developer, e10a6f86).
+QElapsedTimer g_layersMenuPressed;
+
 void watchLayersMenu() {
     QQuickItem *menu = findAnywhere([](QQuickItem *i) { return i->objectName() == QLatin1String("layersMenu"); });
-    QQuickItem *btn = menu ? findItem(menu, [](QQuickItem *i) { return i->metaObject()->indexOfSignal("clicked()") >= 0; }) : nullptr;
+    QQuickItem *btn = menu ? findItem(menu, [](QQuickItem *i) { return i->metaObject()->indexOfSignal("pressed()") >= 0; }) : nullptr;
     lockTextLayerRows();
     if (!btn || btn->property("_rmppTextobjLayersMenu").toBool()) return;
+    QQuickWindow *win = btn->window();
+    if (!win) return;
     btn->setProperty("_rmppTextobjLayersMenu", true);
     auto *hook = new SignalHook;
     hook->setParent(btn);
-    hook->fn = [] { for (int ms : {0, 150, 400}) QTimer::singleShot(ms, qApp, [] { lockTextLayerRows(); }); };
-    QMetaObject::connect(btn, btn->metaObject()->indexOfSignal("clicked()"), hook, QObject::staticMetaObject.methodCount(),
+    hook->fn = [] { g_layersMenuPressed.start(); };
+    QMetaObject::connect(btn, btn->metaObject()->indexOfSignal("pressed()"), hook, QObject::staticMetaObject.methodCount(),
                          Qt::DirectConnection, nullptr);
+    if (!win->property("_rmppTextobjFrames").toBool()) {
+        win->setProperty("_rmppTextobjFrames", true);
+        QObject::connect(win, &QQuickWindow::afterAnimating, btn, [] {
+            if (g_layersMenuPressed.isValid() && g_layersMenuPressed.elapsed() < 4000) lockTextLayerRows();
+        }, Qt::DirectConnection);
+    }
 }
 
 // The document closing (its close button pressed) while the Text objects layer is current and not picked by the
