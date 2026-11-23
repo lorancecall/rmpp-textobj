@@ -152,6 +152,43 @@ void upgradeLegacy(QObject *sc, const QString &pageId, const QList<QRect> &sel) 
     }
 }
 
+// A double tap on a legacy object (no rects yet, rmpp-textobj#5): the strokes around the tap, grown by nearness
+// (a few gap sizes, from a letter gap to a word gap), are offered to upgradeLegacy, which takes them only when
+// count and aspect match a legacy record of the page. Returns whether a record got its rects.
+bool upgradeLegacyAt(QObject *sc, const QString &pageId, const QList<QRect> &page, const QPointF &at) {
+    bool any = false;
+    for (const QJsonValue &v : readRecords()) {
+        const Rec r = recFrom(v.toObject());
+        if (r.rects.isEmpty() && r.page == pageId) { any = true; break; }
+    }
+    if (!any || page.isEmpty()) return false;
+    QList<int> seed;
+    for (int i = 0; i < page.size(); ++i) if (page[i].adjusted(-12, -12, 12, 12).contains(at.toPoint())) seed << i;
+    if (seed.isEmpty()) return false;
+    QList<int> hs;
+    for (int i : seed) hs << page[i].height();
+    std::sort(hs.begin(), hs.end());
+    const int med = qMax(4, hs[hs.size() / 2]);
+    for (double f : {0.35, 0.7, 1.1}) {
+        const int g = qMax(2, int(med * f));
+        QSet<int> in(seed.begin(), seed.end());
+        for (bool grew = true; grew;) {
+            grew = false;
+            for (int i = 0; i < page.size(); ++i) {
+                if (in.contains(i)) continue;
+                const QRect ri = page[i].adjusted(-g, -g, g, g);
+                for (int j : in) if (ri.intersects(page[j])) { in.insert(i); grew = true; break; }
+            }
+        }
+        QList<QRect> cand;
+        for (int i : in) cand << page[i];
+        const QString was = QString::fromUtf8(QJsonDocument(readRecords()).toJson(QJsonDocument::Compact));
+        upgradeLegacy(sc, pageId, cand);
+        if (QString::fromUtf8(QJsonDocument(readRecords()).toJson(QJsonDocument::Compact)) != was) return true;
+    }
+    return false;
+}
+
 // Rule 2, after a selection was made (by the user): whole objects only.
 void applyLassoRule() {
     if (adjusting() || putting() || g_edit.box || !selectionToolActive()) return;
@@ -337,11 +374,19 @@ void doubleTapAt(double x, double y) {
     const QString pageId = dv->property("currentPageId").toString();
     const QList<QRect> sel = lineRects(sc);
     if (!sel.isEmpty()) upgradeLegacy(sc, pageId, sel);
-    const PageObjects po = findObjects(sc, pageId, true);
-    const Placement *hit = nullptr;
-    for (const Placement &p : po.found)
-        if (p.box.adjusted(-12, -12, 12, 12).contains(at) && (!hit || p.box.width() * p.box.height() < hit->box.width() * hit->box.height()))
-            hit = &p;
+    PageObjects po = findObjects(sc, pageId, true);
+    auto hitAt = [&]() -> const Placement * {
+        const Placement *h = nullptr;
+        for (const Placement &p : po.found)
+            if (p.box.adjusted(-12, -12, 12, 12).contains(at) && (!h || p.box.width() * p.box.height() < h->box.width() * h->box.height()))
+                h = &p;
+        return h;
+    };
+    const Placement *hit = hitAt();
+    if (!hit && upgradeLegacyAt(sc, pageId, po.rects, at)) {   // an object from rmpp-hwr 0.2-0.4: it has its rects now
+        po = findObjects(sc, pageId, true);
+        hit = hitAt();
+    }
     if (!hit) return;
     if (!sel.isEmpty()) {
         bool only = false;
