@@ -245,12 +245,12 @@ void settleLayer(bool undo, int n) {
     QString page;
     QObject *sc = pageScene(&page);
     if (n == 0 && g_settling) return;
-    if (!sc || g_ls.active || g_userTextLayer) { if (n > 0) { g_settling = false; chainEnd(); } return; }
+    auto stop = [] { g_settling = false; chainEnd(); };
+    if (!sc || g_ls.active || g_userTextLayer) { if (n > 0) stop(); return; }
     const int t = textLayer(sc);
     if (t < 0 || sc->property("currentLayer").toInt() != t) {
         if (n > 0) {
-            g_settling = false;
-            chainEnd();
+            stop();
             TLOG("text layer: %d more %s step(s) to leave it", n, undo ? "undo" : "redo");
             bool untouched = false;   // the pair just passed
             if (undo && g_pairIdx > 0) untouched = g_pairs.value(--g_pairIdx);
@@ -262,22 +262,21 @@ void settleLayer(bool undo, int n) {
         }
         return;
     }
-    if (n >= 20) { TLOG("text layer: still current after 20 steps"); g_settling = false; chainEnd(); return; }
+    // Only through a pair of switches we made (S2 ... S1): with none on record in that direction, the layer is current
+    // for another reason and nothing is undone or redone for it (20 undos per press ate a notebook's history:
+    // developer, 5a45c7d7). Bounded: a pair holds the switches and what the user did while selected.
+    const bool pair = undo ? g_pairIdx > 0 : g_pairIdx < g_pairs.size();
+    if (!pair) {
+        if (n > 0) stop();
+        TLOG("text layer: current, but no selection of ours to pass: left as it is");
+        return;
+    }
+    if (n >= 8) { TLOG("text layer: still current after 8 steps: left as it is"); stop(); return; }
+    if (!undo && !sc->property("redoAvailable").toBool()) { TLOG("text layer: nothing more to redo"); stop(); return; }
+    if (undo && !sc->property("undoAvailable").toBool()) { TLOG("text layer: nothing more to undo"); stop(); return; }
     if (n == 0) {
         g_settling = true;
         if (!g_chain.active) chainStart(undo, 0);
-    }
-    if (!undo && !sc->property("redoAvailable").toBool()) {
-        // a redo of a switch we had undone (it stays in the redo history) with nothing after it: switch back as a
-        // new step. Undoing it again left it on top of the redo history, so every redo redid it (stuck, device
-        // 0d009cd3); a new step clears that history (empty but for it), and an undo later skips both (settleLayer).
-        int home = -1;
-        for (int i = sc->property("layerCount").toInt() - 1; i >= 0; --i) if (i != t) { home = i; break; }
-        if (home >= 0) setLayer(sc, home);
-        TLOG("text layer: redo ended on it: back to layer %d (a step of its own)", home + 1);
-        g_settling = false;
-        chainEnd();
-        return;
     }
     ownUndoRedo(sc, undo);
     QTimer::singleShot(400, qApp, [undo, n] { settleLayer(undo, n + 1); });
@@ -346,13 +345,23 @@ void moveStraysThenSwitch(QPointer<QObject> scp, int text, int home) {
     PageObjects po;
     const QList<int> strays = strayIndexes(sc, &po);
     if (strays.isEmpty()) { setLayer(sc, home); return; }
+    if (!selectionToolActive()) {   // never a tool switch for it
+        TLOG("text layer: %lld stroke(s) on it are not text objects: left (the selection tool is not on)", (long long)strays.size());
+        setLayer(sc, home);
+        return;
+    }
     TLOG("text layer: %lld stroke(s) on it are not text objects: moved to layer %d", (long long)strays.size(), home + 1);
-    const bool switched = useSelectionTool();
-    QTimer::singleShot(switched ? 500 : 0, sc, [scp, po, strays, text, home] {
+    QTimer::singleShot(0, sc, [scp, po, strays, text, home] {
         if (!scp) return;
-        setSelection(scp, po.rects, strays, [scp, text, home] {
+        setSelection(scp, po.rects, strays, [scp, text, home, n = int(strays.size())] {
             QObject *sc = scp;
             if (!sc) return;
+            if (sc->property("selectionItemCount").toInt() != n) {   // not exactly the strays: nothing moved
+                TLOG("text layer: the strays were not selected (%d of %d): left", sc->property("selectionItemCount").toInt(), n);
+                QMetaObject::invokeMethod(sc, "clearSelectedItems");
+                setLayer(sc, home);
+                return;
+            }
             const QMetaObject *mo = sc->metaObject();
             const int clone = mo->indexOfMethod("cloneSelectedItems(int,double)");
             const int bound = mo->indexOfMethod("getItemBoundingRect(QList<std::shared_ptr<SceneItem>>)");
@@ -388,18 +397,17 @@ void watchLayers() {
     g_userTextLayer = false;
     g_pairs.clear();   // a new document: a new history
     g_pairIdx = 0;
-    // a page opened with the Text objects layer current (seen on the device, cause not found): the user's layer
-    // again, once the page has settled (no scene calls while a page loads: xochitl crashed then)
+    // Nothing is done when a page opens (no layer switch, no tool switch, no strokes moved): a page that opens on the
+    // Text objects layer is treated as the user's pick, so no undo or redo is ever chained for it. Acting here (an
+    // automatic switch back that also moved strokes with the lasso) broke a notebook (developer, 5a45c7d7).
     QPointer<QObject> scp(sc);
     QTimer::singleShot(3000, qApp, [scp] {
-        if (!scp || g_ls.active || g_userTextLayer) return;
-        const int t = textLayer(scp), cur = scp->property("currentLayer").toInt(), n = scp->property("layerCount").toInt();
-        if (t < 0 || cur != t) return;
-        int home = -1;
-        for (int i = n - 1; i >= 0; --i) if (i != t) { home = i; break; }
-        if (home < 0) return;
-        TLOG("text layer: the page opened on it: back to layer %d", home + 1);
-        moveStraysThenSwitch(scp, t, home);
+        if (!scp || g_ls.active) return;
+        const int t = textLayer(scp);
+        if (t >= 0 && scp->property("currentLayer").toInt() == t) {
+            g_userTextLayer = true;
+            TLOG("text layer: the page opened on it: left as it is (the user's layer)");
+        }
     });
     auto *hook = new SignalHook;
     hook->setParent(sc);

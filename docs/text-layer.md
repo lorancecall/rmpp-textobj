@@ -58,7 +58,8 @@ Started by a conversion, a finger double tap, or a redo of a conversion (only wh
 - **End** (`selectionItemCountChanged` to 0: a tap outside, a tool change), checked 600 ms later (a move is applied
   just after the selection ends):
   - strokes on T that are not objects nor marks on one (written there by mistake) are moved to L, if every object
-    found at the start is still found;
+    found at the start is still found, the selection tool is already on (never a tool switch for it) and exactly those
+    strokes got selected;
   - **S2**: `setCurrentLayer(L)` (a step). The pair (S1, S2) is remembered as **untouched** (T unchanged) or not.
 - An undo or redo pressed while selected only ends the selection in xochitl: it is kept and applied after S2.
 
@@ -77,12 +78,14 @@ outside, and a redo replayed the switch.
 - Else, if T may have an object there (positions read whenever T is current, per page; none read yet counts as yes):
   hidden selection on T, select the object at the tap, open the edit box. Nothing there: the session ends untouched.
 
-### Close guard and open fallback
+### Close guard; nothing on open
 
 - The document's close button pressed while T is current (and not picked by the user): L is made current first, so
   the page is not saved on T.
-- A page that opens on T anyway: 3 s later (no scene calls while a page loads: xochitl crashed then), strays on T are
-  moved to L and the topmost other layer is made current.
+- **Nothing is done when a page opens**: no layer switch, no tool switch, no strokes moved. A page that opens on T is
+  taken as the user's pick (no undo or redo is ever chained for it); the user switches layers as usual. An automatic
+  switch back on open (5a45c7d7) turned on the lasso to move strokes, selected none, and with the settle below ate the
+  notebook's history.
 
 ### Layers menu
 
@@ -114,12 +117,14 @@ All in `aboutToUndoRedo` (edit.h), for every undo and redo:
    - **T conversion, redo, from its start**: once the handwriting is gone (A redone), `steps + 1` more redos.
    - **L conversion** (object on L, or an edit on T while T is current): the one-layer chain of #6/#15 (result ->
      neither -> one more step; resent only if the page did not change at all).
-5. **Settle:** after any step that leaves T current (and the user did not pick T), one more step the same way until
-   L is current; one settle at a time. Leaving T past a pair: an **untouched** pair is passed through to the user's own
-   step (userStep again); a changed pair stops there (one undo = the moves of that selection).
+5. **Settle:** after a step that leaves T current, one more step the same way until L is current, **only through a
+   pair we made**: with no pair on record in that direction (T current for any other reason, or picked by the user),
+   nothing is undone or redone; at most 8 steps; one settle at a time. Leaving T past a pair: an **untouched** pair is
+   passed through to the user's own step (userStep again); a changed pair stops there (one undo = the moves of that
+   selection).
 
-**A new step is pushed by us only when the redo history is already empty** (S2 after a redo that ended on T with
-nothing after it), or as part of the user's own action (a conversion, a session, the close guard).
+**We never push a step outside the user's own action** (a conversion, a selection on T, the close guard). The earlier
+"switch back as a new step after a redo that ended on T" is gone: with pairs, a redo never ends between S1 and S2.
 
 ## Bugs found on the device, and fixes
 
@@ -143,10 +148,12 @@ nothing after it), or as part of the user's own action (a conversion, a session,
 | cb57b732 | One undo took several steps | Several settles at once; toolbar taps seen as double taps | One settle at a time; toolbar strip excluded; look on T only near a known object |
 | 8798ea08 | Extra step when undoing a conversion | The selection's pair after it was taken for the conversion's undo | The conversion remembers its pair; the pair goes first |
 | 8798ea08 | Pen-tool double taps missed | TapHandler's double tap | Taps counted by hand |
+| 5a45c7d7 | Notebook broken: tool switched to the lasso on open, writing went to T, Layer 1 could not be picked (jumped back) | Old page with T on top opened on T; the open fallback turned on the lasso to move the new strokes and selected none; then every undo ran settle up to 20 steps (T current), undoing the user's strokes and their own switch to Layer 1 | Nothing on open (T current = the user's pick); settle only through a pair we made, at most 8 steps; strays moved only with the selection tool already on and exactly selected |
 
 **Known limits.** Typed text over an object takes a double tap there first (fixed with the object-mode overlay,
 planned). Objects follow typed text like ink (stock anchoring, decided). A page change during a hidden selection is
-not handled. Pages made before the layer moved to the bottom keep it on top.
+not handled. Pages made before the layer moved to the bottom keep it on top (three test notebooks; their files are
+kept for debugging).
 
 ## Testing a build
 
