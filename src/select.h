@@ -481,11 +481,6 @@ void doubleTapNow(double x, double y, bool onText = false) {
             }
         if (crossed) break;
     }
-    if (crossed && sc->property("currentLayer").toInt() == textLayer(sc)) {
-        // selecting one of them stroke by stroke mixed their strokes (device, f1b714c2)
-        showHint(dv, QStringLiteral("Text objects overlap here."));
-        return;
-    }
     if (onText) {   // nothing but objects on the Text objects layer: one rect selects it, then the edit box
         QPointer<QObject> scp(sc);
         selectRect(sc, hit->box.toAlignedRect().adjusted(-2, -2, 2, 2), 0);
@@ -509,7 +504,10 @@ void doubleTapNow(double x, double y, bool onText = false) {
             bool only = false;
             selectedObjects(po2, lineRects(scp), &only, &other);
             if (!other.isEmpty()) {
+                // not exactly this object: the mixed selection is not left behind (moving it mixed two objects'
+                // strokes, device f1b714c2)
                 const bool onT = scp->property("currentLayer").toInt() == textLayer(scp);
+                if (onT) QMetaObject::invokeMethod(scp, "clearSelectedItems");
                 showHint(dvp, onT ? QStringLiteral("Text objects overlap here.")
                                   : QStringLiteral("Handwriting over this text object is selected with it. Move it off to edit the text."));
             }
