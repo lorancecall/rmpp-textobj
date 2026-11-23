@@ -230,6 +230,54 @@ void layerChanged() {
     g_userTextLayer = on;
 }
 
+// Strokes on the Text objects layer that are not part of a text object (nor a mark on one): written there while
+// that layer was current by mistake (a page opened on it, developer's "테" on 0e3040b5). Moved to the user's layer
+// (copied there in one step, deleted here in one), then that layer is made current.
+void moveStraysThenSwitch(QPointer<QObject> scp, int text, int home) {
+    QObject *sc = scp;
+    if (!sc) return;
+    QQuickItem *dv = documentView();
+    const QString pageId = dv ? dv->property("currentPageId").toString() : QString();
+    const PageObjects po = findObjects(sc, pageId, false);
+    QSet<int> keep;
+    for (const Placement &p : po.found) {
+        for (int m : p.members) if (m >= 0) keep.insert(m);
+        for (int i = 0; i < po.rects.size(); ++i) if (isMark(po, p, i)) keep.insert(i);
+    }
+    QList<int> strays;
+    for (int i = 0; i < po.rects.size(); ++i) if (!keep.contains(i)) strays << i;
+    if (strays.isEmpty()) { setLayer(sc, home); return; }
+    TLOG("text layer: %lld stroke(s) on it are not text objects: moved to layer %d", (long long)strays.size(), home + 1);
+    const bool switched = useSelectionTool();
+    QTimer::singleShot(switched ? 500 : 0, sc, [scp, po, strays, text, home] {
+        if (!scp) return;
+        setSelection(scp, po.rects, strays, [scp, text, home] {
+            QObject *sc = scp;
+            if (!sc) return;
+            const QMetaObject *mo = sc->metaObject();
+            const int clone = mo->indexOfMethod("cloneSelectedItems(int,double)");
+            const int bound = mo->indexOfMethod("getItemBoundingRect(QList<std::shared_ptr<SceneItem>>)");
+            const int add = mo->indexOfMethod("cloneAddAndSelectItems(int,QList<std::shared_ptr<SceneItem>>,double,QPointF)");
+            if (clone < 0 || bound < 0 || add < 0 || sc->property("selectionItemCount").toInt() <= 0) { setLayer(sc, home); return; }
+            int lay = text;
+            double scale = 1.0;
+            QList<std::shared_ptr<void>> items;
+            void *a1[] = {&items, &lay, &scale};
+            sc->qt_metacall(QMetaObject::InvokeMetaMethod, clone, a1);
+            QRectF box;
+            void *a2[] = {&box, &items};
+            sc->qt_metacall(QMetaObject::InvokeMetaMethod, bound, a2);
+            QMetaObject::invokeMethod(sc, "deleteSelectedItems", Q_ARG(int, text));
+            QMetaObject::invokeMethod(sc, "clearSelectedItems");
+            int to = home;
+            QPointF centre = box.center();
+            void *a3[] = {nullptr, &to, &items, &scale, &centre};
+            sc->qt_metacall(QMetaObject::InvokeMetaMethod, add, a3);
+            QTimer::singleShot(300, sc, [scp, home] { if (scp) setLayer(scp, home); });
+        });
+    });
+}
+
 void watchLayers() {
     QQuickItem *dv = documentView();
     QObject *sc = dv ? dv->property("sceneController").value<QObject *>() : nullptr;
@@ -249,8 +297,8 @@ void watchLayers() {
         int home = -1;
         for (int i = n - 1; i >= 0; --i) if (i != t) { home = i; break; }
         if (home < 0) return;
-        setLayer(scp, home);
         TLOG("text layer: the page opened on it: back to layer %d", home + 1);
+        moveStraysThenSwitch(scp, t, home);
     });
     auto *hook = new SignalHook;
     hook->setParent(sc);
@@ -260,4 +308,53 @@ void watchLayers() {
     hook2->setParent(sc);
     hook2->fn = [] { if (g_ls.active) QTimer::singleShot(150, qApp, [] { checkTextSession(); }); };
     QMetaObject::connect(sc, sel, hook2, QObject::staticMetaObject.methodCount(), Qt::DirectConnection, nullptr);
+}
+
+// The Text objects layer in the layers menu is fixed, as xochitl's own Text layer is (developer, #3): no move up or
+// down, no merge, no delete, no rename (LayerComponent's layer*Enabled switches, its name field read-only); the
+// layer below it cannot move up past it, and the layer above it cannot move down or merge into it. Rows are made
+// again when the menu opens: applied when the layers button is clicked and on the 1.5 s timer.
+void lockTextLayerRows() {
+    QList<QQuickItem *> rows;
+    findAnywhere([&rows](QQuickItem *i) {
+        if (classStarts(i, "LayerComponent") && i->isVisible()) rows << i;
+        return false;
+    });
+    if (rows.isEmpty()) return;
+    int t = -1;
+    for (QQuickItem *r : rows) if (r->property("layerName").toString() == QLatin1String(kTextLayerName)) t = r->property("layerIndex").toInt();
+    if (t < 0) return;
+    for (QQuickItem *r : rows) {
+        const int i = r->property("layerIndex").toInt();
+        if (i == t) {
+            for (const char *p : {"layerMoveUpEnabled", "layerMoveDownEnabled", "layerMergeEnabled", "layerTrashEnabled"})
+                if (r->property(p).toBool()) r->setProperty(p, false);
+            if (QObject *in = r->property("textInput").value<QObject *>()) if (!in->property("readOnly").toBool()) in->setProperty("readOnly", true);
+            // the arrows stay shown when moving is off (as on any row): hidden, like the Text row's
+            QList<QQuickItem *> stack{r};
+            while (!stack.isEmpty()) {
+                QQuickItem *x = stack.takeLast();
+                if (x != r && x->metaObject()->indexOfProperty("actionKey") >= 0) { if (x->isVisible()) x->setVisible(false); continue; }
+                stack << x->childItems();
+            }
+        } else if (i == t - 1) {   // just below: moving it up would move the Text objects layer down
+            if (r->property("layerMoveUpEnabled").toBool()) r->setProperty("layerMoveUpEnabled", false);
+        } else if (i == t + 1) {   // just above: moving down or merging would go into the Text objects layer
+            if (r->property("layerMoveDownEnabled").toBool()) r->setProperty("layerMoveDownEnabled", false);
+            if (r->property("layerMergeEnabled").toBool()) r->setProperty("layerMergeEnabled", false);
+        }
+    }
+}
+
+void watchLayersMenu() {
+    QQuickItem *menu = findAnywhere([](QQuickItem *i) { return i->objectName() == QLatin1String("layersMenu"); });
+    QQuickItem *btn = menu ? findItem(menu, [](QQuickItem *i) { return i->metaObject()->indexOfSignal("clicked()") >= 0; }) : nullptr;
+    lockTextLayerRows();
+    if (!btn || btn->property("_rmppTextobjLayersMenu").toBool()) return;
+    btn->setProperty("_rmppTextobjLayersMenu", true);
+    auto *hook = new SignalHook;
+    hook->setParent(btn);
+    hook->fn = [] { for (int ms : {0, 150, 400}) QTimer::singleShot(ms, qApp, [] { lockTextLayerRows(); }); };
+    QMetaObject::connect(btn, btn->metaObject()->indexOfSignal("clicked()"), hook, QObject::staticMetaObject.methodCount(),
+                         Qt::DirectConnection, nullptr);
 }
