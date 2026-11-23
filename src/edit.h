@@ -151,6 +151,7 @@ void recordNew(QPointer<QObject> scp, const QString &page, const QString &text, 
         const int nb = bandCount(hls);
         const int count = scp->property("selectionItemCount").toInt();
         QList<QRect> rects;
+        bool tookOut = false;   // others taken out of the selection: grouping waits until that is done
         if (count >= n) {
             for (const QRect &r : lineRects(scp)) if (!before.contains(rectKey(r))) rects << r;
             if (rects.size() < count && (rects.size() == n + nb || (nb > 0 && rects.size() == n && attempt >= 4))) {
@@ -162,6 +163,7 @@ void recordNew(QPointer<QObject> scp, const QString &page, const QString &text, 
                 for (int i = 0; i < all.size(); ++i) if (mine.contains(rectKey(all[i]))) want << i;
                 TLOG("new ink: %lld other stroke(s) selected with it, taken out", (long long)(count - rects.size()));
                 setSelection(scp, all, want, {});
+                tookOut = true;
             }
         }
         const bool full = rects.size() == n + nb, glyphsOnly = nb > 0 && rects.size() == n && attempt >= 4;
@@ -188,8 +190,11 @@ void recordNew(QPointer<QObject> scp, const QString &page, const QString &text, 
         }
         updateRecords(makeRecord(page, text, glyphs, pl.origin, pl.em, pl.weight, QString(), pl.lines, hlJson(found)), removeIds);
         TLOG("recorded: %d strokes, %lld highlight(s)", n, (long long)found.size());
-        groupNewInk(scp, before, int(rects.size()), page, hand);
-        QTimer::singleShot(3800, qApp, [] { g_putting = false; });   // after the selection settled and the ink was regrouped
+        // the copies are taken from the selection: with others still being taken out of it, they came out one too
+        // many and the ink was left as plain strokes (device, a59a3c3e)
+        const int k = int(rects.size());
+        QTimer::singleShot(tookOut ? 1500 : 0, qApp, [scp, before, k, page, hand] { if (scp) groupNewInk(scp, before, k, page, hand); });
+        QTimer::singleShot(tookOut ? 5300 : 3800, qApp, [] { g_putting = false; });   // after the selection settled and the ink was regrouped
     });
 }
 

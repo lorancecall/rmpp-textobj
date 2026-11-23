@@ -191,9 +191,13 @@ void textLayerSeen() {
     QObject *sc = dv ? dv->property("sceneController").value<QObject *>() : nullptr;
     const QString page = dv ? dv->property("currentPageId").toString() : QString();
     if (!sc || page.isEmpty() || sc->property("currentLayer").toInt() != textLayer(sc)) return;
+    // not while an undo or redo is going through (the layer can be current for a moment before its objects are back:
+    // an empty list was kept and every double tap missed, a59a3c3e); never an empty list over strokes it has
+    if ((g_ownUndo.isValid() && g_ownUndo.elapsed() < 2000) || (g_anyUserStep.isValid() && g_anyUserStep.elapsed() < 2000)) return;
     loadTextBoxes();
     QList<QRectF> boxes;
     for (const Placement &p : findObjects(sc, page, false).found) boxes << p.box;
+    if (boxes.isEmpty() && !layerKeys(sc).isEmpty()) return;
     if (g_textBoxes.value(page) == boxes) return;
     g_textBoxes[page] = boxes;
     saveTextBoxes();
@@ -278,7 +282,8 @@ void watchLayers() {
 }
 
 // ---- the layers menu ----
-// The Text objects row: no move up or down, no merge, no rename; delete stays (developer: it must be deletable). The
+// The Text objects row: no move up or down, no merge; picking and delete stay (renaming is not blocked: blocking
+// the name field also blocked picking the row) (developer: it must be deletable). The
 // layer below it cannot move up past it, the one above it cannot move down or merge into it. Only the button items are
 // touched (hidden on the row, disabled in place on its neighbours): changing a row's layer*Enabled switches made
 // xochitl rebuild its buttons (they flickered). Applied before every frame for 4 s after the layers button is
@@ -309,7 +314,7 @@ void lockTextLayerRows() {
                 if ((k == QLatin1String("up") || k == QLatin1String("down") || k == QLatin1String("merge")) && b->isVisible())
                     b->setVisible(false);
             });
-            if (QObject *in = r->property("textInput").value<QObject *>()) if (!in->property("readOnly").toBool()) in->setProperty("readOnly", true);
+            // the name field is left as it is: made read-only, the row could no longer be picked (developer, a59a3c3e)
         } else if (i == t - 1) {   // just below: moving it up would move the Text objects layer down
             forEachAction(r, [](QQuickItem *b, const QString &k) { if (k == QLatin1String("up") && b->isEnabled()) b->setEnabled(false); });
         } else if (i == t + 1) {   // just above: moving down or merging would go into the Text objects layer

@@ -87,8 +87,9 @@ off for more than one); the same overlay will let a double tap take the tap befo
 
 ### Layers menu
 
-The Text objects row: up, down and merge hidden, its name read-only; **delete stays** (the developer: it must be
-deletable). The row below it cannot move up past it, the row above it cannot move down or merge into it (their
+The Text objects row: up, down and merge hidden; **picking it and delete stay** (the developer: it must be
+deletable). Renaming is not blocked: making the name field read-only also stopped the row from being picked. A
+renamed layer is no longer known as the Text objects layer (the next conversion makes a new one). The row below it cannot move up past it, the row above it cannot move down or merge into it (their
 buttons disabled in place). Only the button items are touched: changing a row's `layer*Enabled` switches made xochitl
 rebuild its buttons (they flickered). Applied before every frame (`QQuickWindow::afterAnimating`) for 4 s after the
 layers button is pressed, so nothing shows for a frame.
@@ -142,6 +143,9 @@ All in `aboutToUndoRedo` (edit.h), for every undo and redo (toolbar buttons and 
 | 5a45c7d7 | Notebook broken: lasso on open, writing went to T, Layer 1 could not be picked | Old page with T on top opened on T; the open fallback turned on the lasso and selected nothing; then every undo ran settle up to 20 steps, undoing the user's strokes and their own switch to Layer 1 | Nothing on open; settle bounded (both superseded by S') |
 | 1ae3249f | An extra step (handwriting gone, object not there yet) on redo, and on undo after more strokes | The chain waited to see the user's step before sending the rest | The rest sent right behind the user's step |
 | 1ae3249f | Pen ink went onto T when the user had picked it | Nothing kept the pen off T | Object mode |
+| a59a3c3e | A finger double tap on an object did nothing | The page's object boxes were stored empty: during a redo the layer was current for a moment before its objects were back, and that empty list was kept | Boxes not read during an undo or redo; never an empty list over a layer that has strokes |
+| a59a3c3e | The Text objects row could not be picked in the layers menu | Its name field made read-only blocked the row's own tap | The name field left alone (rename not blocked) |
+| a59a3c3e | A conversion stayed plain strokes on Layer 1 | A stray stroke was being taken out of the new ink's selection when the copies were made (97 instead of 96) | Grouping waits until the take-out is done |
 | a59a3c3e | Redo of a conversion took 4 presses | Undoing the conversion also removed the Text objects layer it made, so the user's layer index moved down; the redo check compared the stored index | The user's layer is any layer but T, not a stored index |
 | 6ad906ef | The tool switched to the selection tool while writing | Touches while writing (a palm, a resting finger) counted as a double tap, and the tool was switched before looking for an object | Nothing changes unless the tap is on a known object; large contacts ignored; object boxes kept across restarts |
 | a05db063 | Nothing improved: undo stopped or skipped around selections | The pair bookkeeping (where our switches sit in xochitl's unseen history) drifted with pending undos, edits in sessions and fast presses | Design (S'): no hidden switching at all |
