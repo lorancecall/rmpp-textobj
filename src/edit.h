@@ -147,13 +147,7 @@ void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k, cons
         void *a3[] = {nullptr, &lay, &its, &sc1, &centre};
         sc->qt_metacall(QMetaObject::InvokeMetaMethod, add, a3);
         TLOG("new ink: %d strokes in one undo step (%d checks)%s", k, tries + 1, toText ? ", on the text layer" : "");
-        if (toText) {
-            // cloneAddAndSelectItems selects them there; that selection is not on the current layer (not seen by
-            // selectionItemCount), and the next undo only ended it while our extra step went through (device,
-            // 10cf412e: the object showed selected, and the first undo took only the object)
-            QMetaObject::invokeMethod(sc, "clearSelectedItems");
-            rememberTextBox(page, box);
-        }
+        if (toText) rememberTextBox(page, box);   // left selected (cloneAddAndSelectItems): the developer likes it
         pushGroup(sc, page, g_putSteps + 1, false);
     };
     QTimer::singleShot(400, sc, [scp, k, check] {
@@ -311,6 +305,7 @@ void putInkNow(QPointer<QObject> scp, QPointer<QObject> php, QPointer<QQuickItem
 }
 
 QElapsedTimer g_anyUserStep;   // the user's last undo or redo (select.h: undo/redo gestures are not double taps)
+QElapsedTimer g_selectionEnded;   // layer.h: selectionCleared
 
 // Every undo and redo (toolbar buttons, gestures). A press while something is selected only ends the selection in
 // xochitl: left alone, the groups stay as they are.
@@ -320,16 +315,37 @@ void aboutToUndoRedo(bool undo) {
     QString page;
     QObject *sc = pageScene(&page);
     if (!sc) return;
-    if (sc->property("selectionItemCount").toInt() > 0) return;
+    const bool selected = sc->property("selectionItemCount").toInt() > 0;
+    // a press while something is selected, or right after a selection ended (the toolbar button ends it on press),
+    // may be spent by xochitl on the selection (device, 10cf412e: the object left selected after a conversion, the
+    // first undo took only our extra step)
+    // (undo only: after a group is undone, redoAvailable was false before and tells whether the press was applied;
+    // for a redo, undoAvailable is nearly always true already)
+    const bool justSelected = undo && (selected || (g_selectionEnded.isValid() && g_selectionEnded.elapsed() < 1000));
+    if (!undo && selected) return;   // a redo while selected only ends the selection: the groups stay
     QList<Group> &from = undo ? g_undoGroups : g_redoGroups;
     QList<Group> &to = undo ? g_redoGroups : g_undoGroups;
     bool ok = g_groupsKnown && !from.isEmpty() && from.last().page == page;
-    if (ok && undo && !from.last().post.isEmpty() && pageSig(sc) != from.last().post) ok = false;
-    if (!ok) { groupsUnknown(undo ? "an undo of something else" : "a redo of something else"); return; }
+    if (ok && undo && !from.last().post.isEmpty() && !justSelected && pageSig(sc) != from.last().post) ok = false;
+    if (!ok) { if (!justSelected) groupsUnknown(undo ? "an undo of something else" : "a redo of something else"); return; }
     const Group g = from.takeLast();
-    if (g.n > 1) ownUndoRedo(sc, undo, g.n - 1);
     to.append(g);
-    TLOG("%s: %d step(s) in one press", undo ? "undo" : "redo", g.n);
+    if (!justSelected) {
+        if (g.n > 1) ownUndoRedo(sc, undo, g.n - 1);
+        TLOG("%s: %d step(s) in one press", undo ? "undo" : "redo", g.n);
+        return;
+    }
+    // look a moment later whether the press was applied: before the group was undone (redone) nothing was left to
+    // redo (undo), so redoAvailable (undoAvailable) tells
+    const bool otherBefore = (undo ? sc->property("redoAvailable") : sc->property("undoAvailable")).toBool();
+    QPointer<QObject> scp(sc);
+    QTimer::singleShot(450, qApp, [scp, undo, g, otherBefore] {
+        if (!scp) return;
+        const bool applied = !otherBefore && (undo ? scp->property("redoAvailable") : scp->property("undoAvailable")).toBool();
+        const int more = applied ? g.n - 1 : g.n;
+        if (more > 0) ownUndoRedo(scp, undo, more);
+        TLOG("%s with a selection: the press %s, %d more step(s)", undo ? "undo" : "redo", applied ? "applied" : "spent on it", more);
+    });
 }
 
 void watchUndoRedo() {
