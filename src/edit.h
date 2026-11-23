@@ -16,11 +16,11 @@ QList<QList<QPointF>> inkAndBands(const Placed &pl, const QList<Hl> &hls) {
     return out;
 }
 
-// The last conversion or edit on a page: its handwriting (or the old object) that was deleted, and the new ink, as
-// stroke-rect keys. An undo that takes the new ink away is followed by one more, which brings the handwriting back,
-// so that one undo undoes the conversion (watchUndoRedo); a redo likewise.
+// The conversions and edits of this session: the handwriting (or the old object) each deleted, and its new ink, as
+// stroke-rect keys. An undo that takes a conversion's new ink away is followed by one more, which brings its
+// handwriting back, so that one undo undoes the conversion (watchUndoRedo); a redo likewise. Newest last.
 struct LastConv { QString page; QSet<QString> obj, hand; };
-LastConv g_lastConv;
+QList<LastConv> g_convs;
 
 // One undo step for new ink (#6). addDrawingLine makes an undo step per stroke (a conversion took ~28 undos to
 // bring the handwriting back); SceneController::cloneAddAndSelectItems adds a list of items as one step, centred on a
@@ -82,7 +82,9 @@ void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k, cons
                 if (!scp) return;
                 LastConv lc{page, {}, hand};
                 for (const QRect &r : pageLineRects(scp)) if (!before.contains(rectKey(r))) lc.obj.insert(rectKey(r));
-                if (!lc.obj.isEmpty()) g_lastConv = lc;
+                if (lc.obj.isEmpty()) return;
+                g_convs.append(lc);
+                if (g_convs.size() > 100) g_convs.removeFirst();
             });
     };
     QTimer::singleShot(400, sc, [scp, k, check] {
@@ -159,7 +161,7 @@ void putInk(QPointer<QObject> scp, QPointer<QObject> php, QPointer<QQuickItem> d
     g_putting = true;
     g_putStarted.start();
     // addDrawingLine is ignored while a selection is active
-    QSet<QString> hand;   // what the new ink replaces (for one undo, g_lastConv)
+    QSet<QString> hand;   // what the new ink replaces (for one undo, g_convs)
     if (deleteSelection) for (const QRect &r : lineRects(scp)) hand.insert(rectKey(r));
     if (deleteSelection) QMetaObject::invokeMethod(scp, "deleteSelectedItems", Q_ARG(int, layer));
     else endSelection(scp, dvp);
@@ -185,62 +187,96 @@ void putInk(QPointer<QObject> scp, QPointer<QObject> php, QPointer<QQuickItem> d
     });
 }
 
-// One undo for a conversion or edit (g_lastConv): the toolbar's undo and redo buttons. Only when the click starts
-// from the conversion's result (undo: the new ink on the page, the handwriting not) and ends with neither on the
-// page, one more undo brings the handwriting back; redo likewise from the handwriting. Undoing further (the
-// handwriting's own strokes) is left alone. undo() and redo() take effect a moment later: the page is looked at for
-// up to 1.5 s.
-QPair<int, int> lastConvOnPage(QObject *sc) {
-    int obj = 0, hand = 0;
-    for (const QRect &r : pageLineRects(sc)) {
-        const QString key = rectKey(r);
-        if (g_lastConv.obj.contains(key)) ++obj;
-        if (g_lastConv.hand.contains(key)) ++hand;
-    }
-    return {obj, hand};
+// One undo for a conversion or edit (g_convs): the toolbar's undo and redo buttons. Only when the click starts from a
+// conversion's result (undo: its new ink on the page, its handwriting not) and ends with neither on the page, one
+// more undo brings the handwriting back; redo likewise from the handwriting. Undoing further (the handwriting's own
+// strokes) is left alone. A moved or resized object is not its recorded new ink any more: undoing the move first
+// brings it back, then the next undo is the conversion's. undo() and redo() take effect a moment later: the page is
+// looked at for up to 1.5 s.
+// Where a conversion stands on the page: its result (all its new ink there, none of the old strokes it does not share),
+// its start (all its handwriting or old object there, none of the new strokes it does not share: an edit keeps most
+// glyph strokes as they were), or neither (no stroke of either: the state between the two undo steps).
+enum class ConvState { Result, Start, Neither, Other };
+ConvState convState(QObject *sc, const LastConv &c) {
+    QSet<QString> page;
+    for (const QRect &r : pageLineRects(sc)) page.insert(rectKey(r));
+    int obj = 0, hand = 0, objOnly = 0, handOnly = 0;
+    for (const QString &k : c.obj) if (page.contains(k)) { ++obj; if (!c.hand.contains(k)) ++objOnly; }
+    for (const QString &k : c.hand) if (page.contains(k)) { ++hand; if (!c.obj.contains(k)) ++handOnly; }
+    if (obj == c.obj.size() && handOnly == 0) return ConvState::Result;
+    if (hand == c.hand.size() && objOnly == 0) return ConvState::Start;
+    if (obj == 0 && hand == 0) return ConvState::Neither;
+    return ConvState::Other;
 }
 
-QObject *lastConvScene() {
+QObject *pageScene(QString *page) {
     QQuickItem *dv = documentView();
     QObject *sc = dv ? dv->property("sceneController").value<QObject *>() : nullptr;
-    if (!sc || g_lastConv.obj.isEmpty() || dv->property("currentPageId").toString() != g_lastConv.page) return nullptr;
+    if (sc) *page = dv->property("currentPageId").toString();
     return sc;
 }
 
-void afterUndoRedo(bool undo, int tries = 0) {
-    QObject *sc = lastConvScene();
-    if (!sc) return;
-    const QPair<int, int> now = lastConvOnPage(sc);
-    const int obj = now.first, hand = now.second;
-    if ((undo ? obj > 0 : hand > 0) && tries < 7) {   // the click not applied yet
-        QTimer::singleShot(200, qApp, [undo, tries] { afterUndoRedo(undo, tries + 1); });
+void afterUndoRedo(bool undo, LastConv c, int tries = 0) {
+    QString page;
+    QObject *sc = pageScene(&page);
+    if (!sc || page != c.page) return;
+    const ConvState st = convState(sc, c);
+    if (st == (undo ? ConvState::Result : ConvState::Start) && tries < 7) {   // the click not applied yet
+        QTimer::singleShot(200, qApp, [undo, c, tries] { afterUndoRedo(undo, c, tries + 1); });
         return;
     }
-    if (obj == 0 && hand == 0) {
+    if (st == ConvState::Neither) {
         QMetaObject::invokeMethod(sc, undo ? "undo" : "redo");
         TLOG("%s: conversion %s in one step", undo ? "undo" : "redo", undo ? "undone" : "redone");
     }
 }
 
-void undoRedoClicked(bool undo) {
-    QObject *sc = lastConvScene();
+// The conversion an undo or redo click starts from, found when the button is pressed: by the time clicked() comes,
+// xochitl has already applied the undo.
+bool g_undoPending = false;
+LastConv g_undoConv;
+QElapsedTimer g_undoPressed;
+
+void undoRedoPressed(bool undo) {
+    g_undoPending = false;
+    QString page;
+    QObject *sc = pageScene(&page);
     if (!sc) return;
-    const QPair<int, int> before = lastConvOnPage(sc);   // the click's undo has not taken effect yet
-    const bool fromResult = undo ? (before.first > 0 && before.second == 0) : (before.second > 0 && before.first == 0);
-    if (fromResult) QTimer::singleShot(300, qApp, [undo] { afterUndoRedo(undo); });
+    for (int i = int(g_convs.size()) - 1; i >= 0; --i) {   // the newest conversion the click starts from
+        const LastConv &c = g_convs[i];
+        if (c.page != page) continue;
+        if (convState(sc, c) != (undo ? ConvState::Result : ConvState::Start)) continue;
+        g_undoConv = c;
+        g_undoPending = true;
+        g_undoPressed.start();
+        return;
+    }
+}
+
+void undoRedoClicked(bool undo) {
+    if (!g_undoPending || g_undoPressed.elapsed() > 3000) return;
+    g_undoPending = false;
+    const LastConv c = g_undoConv;
+    QTimer::singleShot(300, qApp, [undo, c] { afterUndoRedo(undo, c); });
 }
 
 void watchUndoRedo() {
     for (const char *name : {"undoButton", "redoButton"}) {
         QQuickItem *b = findAnywhere([name](QQuickItem *i) { return i->objectName() == QLatin1String(name); });
-        QQuickItem *btn = b ? findItem(b, [](QQuickItem *i) { return i->metaObject()->indexOfSignal("clicked()") >= 0; }) : nullptr;
+        QQuickItem *btn = b ? findItem(b, [](QQuickItem *i) {
+            return i->metaObject()->indexOfSignal("clicked()") >= 0 && i->metaObject()->indexOfSignal("pressed()") >= 0; }) : nullptr;
         if (!btn || btn->property("_rmppTextobjUndo").toBool()) continue;
         btn->setProperty("_rmppTextobjUndo", true);
-        auto *hook = new SignalHook;
-        hook->setParent(btn);
         const bool undo = qstrcmp(name, "undoButton") == 0;
-        hook->fn = [undo] { undoRedoClicked(undo); };
-        QMetaObject::connect(btn, btn->metaObject()->indexOfSignal("clicked()"), hook, QObject::staticMetaObject.methodCount(),
+        auto *press = new SignalHook;
+        press->setParent(btn);
+        press->fn = [undo] { undoRedoPressed(undo); };
+        QMetaObject::connect(btn, btn->metaObject()->indexOfSignal("pressed()"), press, QObject::staticMetaObject.methodCount(),
+                             Qt::DirectConnection, nullptr);
+        auto *click = new SignalHook;
+        click->setParent(btn);
+        click->fn = [undo] { undoRedoClicked(undo); };
+        QMetaObject::connect(btn, btn->metaObject()->indexOfSignal("clicked()"), click, QObject::staticMetaObject.methodCount(),
                              Qt::DirectConnection, nullptr);
     }
 }
