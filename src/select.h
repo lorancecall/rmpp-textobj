@@ -608,14 +608,26 @@ void checkErasedObjects() {
     g_check.once = true;
     const QList<Rec> recs = readRecs();
     const RectIndex idx(rects);
-    QStringList drop;
+    // Strokes of an object found whole do not count for another record: the same text converted again at the same
+    // place (the first conversion undone) shares glyph strokes with it, which looked like a partly erased object.
+    QList<Placement> partials;
+    QList<int> partialRec;
+    QSet<int> whole;   // page rect indexes of objects found whole
     for (int i = 0; i < recs.size(); ++i) {
         const Rec &r = recs[i];
         if (r.page != pageId || r.rects.isEmpty()) continue;
         QList<Placement> full;
         Placement partial;
         findRec(r, i, rects, idx, &full, &partial, scaleAllowed(r, pageId));
-        if (full.isEmpty() && partial.matched >= qMax(2, (r.n + 1) / 2) && partial.matched < r.n) drop << r.id;
+        for (const Placement &f : full) for (int m : f.members) if (m >= 0) whole.insert(m);
+        if (full.isEmpty() && partial.matched > 0) { partials << partial; partialRec << i; }
+    }
+    QStringList drop;
+    for (int j = 0; j < partials.size(); ++j) {
+        const Rec &r = recs[partialRec[j]];
+        int own = 0;
+        for (int m : partials[j].members) if (m >= 0 && !whole.contains(m)) ++own;
+        if (own >= qMax(2, (r.n + 1) / 2) && partials[j].matched < r.n) drop << r.id;
     }
     if (!drop.isEmpty()) {
         updateRecords({}, drop);
