@@ -203,9 +203,13 @@ void settleLayer(bool undo, int n) {
     }
     if (n >= 20) { TLOG("text layer: still current after 20 steps"); return; }
     if (!undo && !sc->property("redoAvailable").toBool()) {
-        // a redo of a switch we had undone (it stays in the redo history): nothing after it, so take it back
-        ownUndoRedo(sc, true);
-        TLOG("text layer: redo ended on it: switch undone again");
+        // a redo of a switch we had undone (it stays in the redo history) with nothing after it: switch back as a
+        // new step. Undoing it again left it on top of the redo history, so every redo redid it (stuck, device
+        // 0d009cd3); a new step clears that history (empty but for it), and an undo later skips both (settleLayer).
+        int home = -1;
+        for (int i = sc->property("layerCount").toInt() - 1; i >= 0; --i) if (i != t) { home = i; break; }
+        if (home >= 0) setLayer(sc, home);
+        TLOG("text layer: redo ended on it: back to layer %d (a step of its own)", home + 1);
         return;
     }
     ownUndoRedo(sc, undo);

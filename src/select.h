@@ -367,10 +367,10 @@ bool viewToPage(QQuickItem *dv, const QPointF &p, QPointF *out);
 // Double tap at x, y (DocumentView coordinates) with the selection tool: select the text object there; if it is
 // selected already, edit it. Not found on the current layer: looked for on the Text objects layer (layer.h), made
 // current for it (onText); nothing there either: the user's layer comes back (the session ends unselected).
-void doubleTapAt(double x, double y, bool onText = false) {
+void doubleTapNow(double x, double y, bool onText = false) {
     if (g_edit.box || putting() || adjusting()) { if (onText) textSessionSelected(); return; }
     if (!selectionToolActive()) {   // another tool: the selection tool first (selecting needs it)
-        if (useSelectionTool()) QTimer::singleShot(500, qApp, [x, y, onText] { doubleTapAt(x, y, onText); });
+        if (useSelectionTool()) QTimer::singleShot(500, qApp, [x, y, onText] { doubleTapNow(x, y, onText); });
         else if (onText) textSessionSelected();
         return;
     }
@@ -399,7 +399,7 @@ void doubleTapAt(double x, double y, bool onText = false) {
         if (onText) { TLOG("double tap: no text object here on the text layer either"); textSessionSelected(); }
         else if (t >= 0 && t != cur && !textSessionActive()) {
             g_lastDoubleTap.start();
-            startTextSession(QPointer<QObject>(sc), pageId, cur, t, [x, y] { doubleTapAt(x, y, true); });
+            startTextSession(QPointer<QObject>(sc), pageId, cur, t, [x, y] { doubleTapNow(x, y, true); });
         }
         return;
     }
@@ -431,6 +431,16 @@ void doubleTapAt(double x, double y, bool onText = false) {
                 showHint(dvp, QStringLiteral("Handwriting over this text object is selected with it. Move it off to edit the text."));
             else editSelectedObjects(true);   // a double tap edits the object right away (developer, #3)
         });
+    });
+}
+
+// A finger double tap from the overlay. The two-finger (undo) and three-finger (redo) tap gestures are seen as a
+// double tap too, and starting a selection then cleared the redo history (device, 0d009cd3): wait a moment, and it
+// is not a double tap if an undo or redo came with it.
+void doubleTapAt(double x, double y) {
+    QTimer::singleShot(450, qApp, [x, y] {
+        if (g_anyUserStep.isValid() && g_anyUserStep.elapsed() < 900) { TLOG("double tap: an undo/redo gesture, left alone"); return; }
+        doubleTapNow(x, y);
     });
 }
 

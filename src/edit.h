@@ -432,9 +432,12 @@ void afterPendingStep(bool undo) {
 
 bool textSessionPending(bool undo);   // layer.h: true if a selection on the Text objects layer takes it
 
+QElapsedTimer g_anyUserStep;   // the user's last undo or redo, also one taken by a selection (select.h: double taps)
+
 void aboutToUndoRedo(bool undo) {
     if (g_ownSteps > 0 && g_ownUndo.isValid() && g_ownUndo.elapsed() < 3000) { --g_ownSteps; return; }
     g_ownSteps = 0;
+    g_anyUserStep.start();
     if (textSessionPending(undo)) return;
     userStep(undo, false);
 }
