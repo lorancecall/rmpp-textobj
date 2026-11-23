@@ -452,7 +452,10 @@ void doubleTapNow(double x, double y, bool onText = false) {
     // not selected, or selected with other handwriting: select this object alone
     g_lastDoubleTap.start();
     TLOG("double tap: selecting a text object (%d strokes)", hit->matched);
-    if (onText) {   // nothing but objects on the Text objects layer: one rect selects it, then the edit box
+    bool crossed = false;   // another object's strokes within this one's box: one rect would take them too
+    for (const Placement &p : po.found)
+        if (&p != hit && p.box.intersects(hit->box)) crossed = true;
+    if (onText && !crossed) {   // nothing but objects on the Text objects layer: one rect selects it, then the edit box
         QPointer<QObject> scp(sc);
         selectRect(sc, hit->box.toAlignedRect().adjusted(-2, -2, 2, 2), 0);
         QTimer::singleShot(250, sc, [scp] {
@@ -474,8 +477,11 @@ void doubleTapNow(double x, double y, bool onText = false) {
             QList<int> other;
             bool only = false;
             selectedObjects(po2, lineRects(scp), &only, &other);
-            if (!other.isEmpty())
-                showHint(dvp, QStringLiteral("Handwriting over this text object is selected with it. Move it off to edit the text."));
+            if (!other.isEmpty()) {
+                const bool onT = scp->property("currentLayer").toInt() == textLayer(scp);
+                showHint(dvp, onT ? QStringLiteral("Text objects overlap here.")
+                                  : QStringLiteral("Handwriting over this text object is selected with it. Move it off to edit the text."));
+            }
             else editSelectedObjects(true);   // a double tap edits the object right away (developer, #3)
         });
     });

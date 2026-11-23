@@ -188,9 +188,17 @@ void loadTextBoxes() {
     if (pruned) { TLOG("text layer: %d page(s) gone, their object boxes dropped", pruned); saveTextBoxes(); }
 }
 
+// Mostly the same rect (an object added again by a redo, or read again): one box.
+bool sameBox(const QRectF &a, const QRectF &b) {
+    const QRectF i = a.intersected(b);
+    const double ia = i.width() * i.height(), u = a.width() * a.height() + b.width() * b.height() - ia;
+    return u > 0 && ia / u > 0.6;
+}
+
 void rememberTextBox(const QString &page, const QRectF &box) {
     loadTextBoxes();
     QList<QRectF> &boxes = g_textBoxes[page];
+    for (int i = int(boxes.size()) - 1; i >= 0; --i) if (sameBox(boxes[i], box)) boxes.removeAt(i);
     boxes << box;
     while (boxes.size() > 200) boxes.removeFirst();
     while (g_textBoxes.size() > 500) g_textBoxes.erase(g_textBoxes.begin());
@@ -213,10 +221,14 @@ void readTextBoxes(QObject *sc) {
 // How many of the Text objects layer's known objects are at `at` (0: none; 2 or more: they overlap there).
 int textObjectsAt(const QString &page, const QPointF &at, QRectF *box = nullptr) {
     loadTextBoxes();
-    int n = 0;
-    for (const QRectF &b : g_textBoxes.value(page))
-        if (b.adjusted(-15, -15, 15, 15).contains(at)) { ++n; if (box) *box = b; }
-    return n;
+    QList<QRectF> hits;   // distinct boxes there (duplicates of one object counted once: a false overlap, 10cf412e)
+    for (const QRectF &b : g_textBoxes.value(page)) {
+        if (!b.adjusted(-15, -15, 15, 15).contains(at)) continue;
+        bool dup = false;
+        for (const QRectF &h : hits) if (sameBox(h, b)) dup = true;
+        if (!dup) { hits << b; if (box) *box = b; }
+    }
+    return int(hits.size());
 }
 
 // ---- switching ----
