@@ -16,11 +16,18 @@ QList<QList<QPointF>> inkAndBands(const Placed &pl, const QList<Hl> &hls) {
     return out;
 }
 
+// The last conversion or edit on a page: its handwriting (or the old object) that was deleted, and the new ink, as
+// stroke-rect keys. An undo that takes the new ink away is followed by one more, which brings the handwriting back,
+// so that one undo undoes the conversion (watchUndoRedo); a redo likewise.
+struct LastConv { QString page; QSet<QString> obj, hand; };
+LastConv g_lastConv;
+
 // One undo step for new ink (#6). addDrawingLine makes an undo step per stroke (a conversion took ~28 undos to
 // bring the handwriting back); SceneController::cloneAddAndSelectItems adds a list of items as one step, centred on a
 // point. So, once the new ink is recorded and selected: copy it, undo the k additions, check that exactly the new
 // strokes went (else redo them and keep the ink as it is), and add the copies back in one step, where they were.
-void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k) {
+void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k, const QString &page = QString(),
+                 const QSet<QString> &hand = {}) {
     QObject *sc = scp;
     if (!sc || k <= 1) return;
     const QMetaObject *mo = sc->metaObject();
@@ -42,7 +49,7 @@ void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k) {
     // undo() right after ending a selection is ignored (device, OS 3.29.1), and takes effect a moment after it is
     // called: undo once the selection is gone, then wait until the new strokes are gone
     auto check = std::make_shared<std::function<void(int)>>();
-    *check = [scp, before, k, items, box, layer, add, check](int tries) {
+    *check = [scp, before, k, items, box, layer, add, check, page, hand](int tries) {
         QObject *sc = scp;
         if (!sc) return;
         int fresh = 0, kept = 0;
@@ -70,6 +77,13 @@ void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k) {
         void *a3[] = {nullptr, &lay, &its, &sc1, &centre};
         sc->qt_metacall(QMetaObject::InvokeMetaMethod, add, a3);
         TLOG("new ink: %d strokes in one undo step (%d checks)", k, tries + 1);
+        if (!hand.isEmpty())   // the new ink's keys, once it is on the page again
+            QTimer::singleShot(400, sc, [scp, before, page, hand] {
+                if (!scp) return;
+                LastConv lc{page, {}, hand};
+                for (const QRect &r : pageLineRects(scp)) if (!before.contains(rectKey(r))) lc.obj.insert(rectKey(r));
+                if (!lc.obj.isEmpty()) g_lastConv = lc;
+            });
     };
     QTimer::singleShot(400, sc, [scp, k, check] {
         if (!scp) return;
@@ -86,7 +100,7 @@ void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k) {
 // object it overlaps: those are left out (and taken out of the selection).
 void recordNew(QPointer<QObject> scp, const QString &page, const QString &text, const Placed &pl, int n,
                const QStringList &removeIds, const QList<Hl> &hls = {}, int attempt = 0,
-               const QSet<QString> &before = {}) {
+               const QSet<QString> &before = {}, const QSet<QString> &hand = {}) {
     QTimer::singleShot(attempt == 0 ? 300 : 400, qApp, [=] {
         if (!scp) { g_putting = false; return; }
         const int nb = bandCount(hls);
@@ -113,7 +127,7 @@ void recordNew(QPointer<QObject> scp, const QString &page, const QString &text, 
                 TLOG("new ink not selected yet, selecting again%s", switched ? " (selection tool)" : "");
                 QTimer::singleShot(switched ? 500 : 0, scp, [scp, pl, hls] { if (scp) selectInk(scp, inkAndBands(pl, hls)); });
             }
-            if (attempt < 6) recordNew(scp, page, text, pl, n, removeIds, hls, attempt + 1, before);
+            if (attempt < 6) recordNew(scp, page, text, pl, n, removeIds, hls, attempt + 1, before, hand);
             else {
                 TLOG("new ink not selected (%d of %d), not recorded: plain strokes", count, n + nb);
                 g_putting = false;
@@ -129,7 +143,7 @@ void recordNew(QPointer<QObject> scp, const QString &page, const QString &text, 
         }
         updateRecords(makeRecord(page, text, glyphs, pl.origin, pl.em, pl.weight, QString(), pl.lines, hlJson(found)), removeIds);
         TLOG("recorded: %d strokes, %lld highlight(s)", n, (long long)found.size());
-        groupNewInk(scp, before, int(rects.size()));
+        groupNewInk(scp, before, int(rects.size()), page, hand);
         QTimer::singleShot(3800, qApp, [] { g_putting = false; });   // after the selection settled and the ink was regrouped
     });
 }
@@ -145,6 +159,8 @@ void putInk(QPointer<QObject> scp, QPointer<QObject> php, QPointer<QQuickItem> d
     g_putting = true;
     g_putStarted.start();
     // addDrawingLine is ignored while a selection is active
+    QSet<QString> hand;   // what the new ink replaces (for one undo, g_lastConv)
+    if (deleteSelection) for (const QRect &r : lineRects(scp)) hand.insert(rectKey(r));
     if (deleteSelection) QMetaObject::invokeMethod(scp, "deleteSelectedItems", Q_ARG(int, layer));
     else endSelection(scp, dvp);
     QTimer::singleShot(400, scp, [=] {
@@ -156,7 +172,7 @@ void putInk(QPointer<QObject> scp, QPointer<QObject> php, QPointer<QQuickItem> d
         if (added > 0) {
             selectInk(scp, inkAndBands(pl, bands > 0 ? hls : QList<Hl>()));
             recordNew(scp, dvp ? dvp->property("currentPageId").toString() : scp->property("pageId").toString(), text, pl,
-                      added, removeIds, bands > 0 ? hls : QList<Hl>(), 0, before);
+                      added, removeIds, bands > 0 ? hls : QList<Hl>(), 0, before, hand);
         } else {
             g_putting = false;
             if (added < 0) showHint(dvp, QStringLiteral("rmpp-textobj: this xochitl version is not supported"));
@@ -167,6 +183,45 @@ void putInk(QPointer<QObject> scp, QPointer<QObject> php, QPointer<QQuickItem> d
             if (fullRefresh) fullRefreshLater(dvp, 0);
         });
     });
+}
+
+// One undo for a conversion or edit (g_lastConv): the toolbar's undo and redo buttons. After an undo, when the new
+// ink is gone and the handwriting is not back, undo once more; after a redo, when the handwriting is gone and the new
+// ink is not back, redo once more. undo() and redo() take effect a moment later: the page is looked at for up to 1.5 s.
+void afterUndoRedo(bool undo, int tries = 0) {
+    QQuickItem *dv = documentView();
+    QObject *sc = dv ? dv->property("sceneController").value<QObject *>() : nullptr;
+    if (!sc || g_lastConv.obj.isEmpty() || dv->property("currentPageId").toString() != g_lastConv.page) return;
+    int obj = 0, hand = 0;
+    for (const QRect &r : pageLineRects(sc)) {
+        const QString key = rectKey(r);
+        if (g_lastConv.obj.contains(key)) ++obj;
+        if (g_lastConv.hand.contains(key)) ++hand;
+    }
+    const bool pending = undo ? (obj > 0 && hand == 0) : (hand > 0 && obj == 0);   // the click not applied yet
+    if (pending && tries < 7) {
+        QTimer::singleShot(200, qApp, [undo, tries] { afterUndoRedo(undo, tries + 1); });
+        return;
+    }
+    if (obj == 0 && hand == 0) {
+        QMetaObject::invokeMethod(sc, undo ? "undo" : "redo");
+        TLOG("%s: conversion %s in one step", undo ? "undo" : "redo", undo ? "undone" : "redone");
+    }
+}
+
+void watchUndoRedo() {
+    for (const char *name : {"undoButton", "redoButton"}) {
+        QQuickItem *b = findAnywhere([name](QQuickItem *i) { return i->objectName() == QLatin1String(name); });
+        QQuickItem *btn = b ? findItem(b, [](QQuickItem *i) { return i->metaObject()->indexOfSignal("clicked()") >= 0; }) : nullptr;
+        if (!btn || btn->property("_rmppTextobjUndo").toBool()) continue;
+        btn->setProperty("_rmppTextobjUndo", true);
+        auto *hook = new SignalHook;
+        hook->setParent(btn);
+        const bool undo = qstrcmp(name, "undoButton") == 0;
+        hook->fn = [undo] { QTimer::singleShot(300, qApp, [undo] { afterUndoRedo(undo); }); };
+        QMetaObject::connect(btn, btn->metaObject()->indexOfSignal("clicked()"), hook, QObject::staticMetaObject.methodCount(),
+                             Qt::DirectConnection, nullptr);
+    }
 }
 
 // ---- edit box ----
