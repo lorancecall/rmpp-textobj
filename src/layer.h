@@ -182,6 +182,12 @@ void settleLayer(bool undo, int n) {
         return;
     }
     if (n >= 20) { TLOG("text layer: still current after 20 steps"); return; }
+    if (!undo && !sc->property("redoAvailable").toBool()) {
+        // a redo of a switch we had undone (it stays in the redo history): nothing after it, so take it back
+        ownUndoRedo(sc, true);
+        TLOG("text layer: redo ended on it: switch undone again");
+        return;
+    }
     ownUndoRedo(sc, undo);
     QTimer::singleShot(400, qApp, [undo, n] { settleLayer(undo, n + 1); });
 }

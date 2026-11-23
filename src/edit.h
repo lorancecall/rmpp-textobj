@@ -27,6 +27,7 @@ struct LastConv {
     QSet<QString> obj, hand;
     int text = -1, home = -1, steps = 0;
     QSet<QString> lAfter, lBefore;
+    QRect box;   // the new ink, to select it after a redo
 };
 QList<LastConv> g_convs;
 void ownUndoRedo(QObject *sc, bool undo, int times = 1);   // below: our own undo()/redo() calls
@@ -124,6 +125,7 @@ void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k, cons
                     lc.steps = steps;
                     lc.lAfter = layerKeys(scp);
                     lc.lBefore = lc.lAfter + hand;
+                    lc.box = box.toAlignedRect();
                     g_convs.append(lc);
                     if (g_convs.size() > 100) g_convs.removeFirst();
                 }
@@ -343,10 +345,12 @@ void layerConvStep(bool undo, LastConv c, int tries = 0) {
         if (keys != c.lAfter) { TLOG("undo: the user's layer changed: not the conversion"); return; }
         ownUndoRedo(sc, true, c.steps + 1);
         TLOG("undo: conversion undone in one step (text layer, %d step(s) more)", c.steps + 1);
-        QTimer::singleShot(1500, qApp, [c] {
+        QTimer::singleShot(1500, qApp, [c] {   // the handwriting back, selected as before the conversion
             QString page;
             QObject *sc = pageScene(&page);
-            if (sc && page == c.page && !layerKeys(sc).contains(c.hand)) TLOG("undo: the handwriting is not all back");
+            if (!sc || page != c.page) return;
+            if (!layerKeys(sc).contains(c.hand)) TLOG("undo: the handwriting is not all back");
+            else selectSide(sc, c.hand);
         });
         return;
     }
@@ -357,6 +361,21 @@ void layerConvStep(bool undo, LastConv c, int tries = 0) {
     if (keys != c.lAfter) { TLOG("redo: the user's layer is not the conversion's result: left as is"); return; }
     ownUndoRedo(sc, false, c.steps + 1);
     TLOG("redo: conversion redone in one step (text layer, %d step(s) more)", c.steps + 1);
+    QTimer::singleShot(1500, qApp, [c] {   // the object selected, as after the conversion
+        QString page;
+        QObject *sc = pageScene(&page);
+        if (!sc || page != c.page || textSessionActive() || sc->property("currentLayer").toInt() != c.home) return;
+        QPointer<QObject> scp(sc);
+        const QRect sel = c.box.adjusted(-2, -2, 2, 2);
+        startTextSession(scp, page, c.home, c.text, [scp, sel] {
+            const bool switched = useSelectionTool();
+            QTimer::singleShot(switched ? 500 : 0, scp, [scp, sel] {
+                if (!scp) return;
+                selectRect(scp, sel, 0);
+                QTimer::singleShot(500, scp, [] { textSessionSelected(); });
+            });
+        });
+    });
 }
 
 QElapsedTimer g_userStepAt;   // layer.h: layer changes right after the user's undo or redo are not a pick

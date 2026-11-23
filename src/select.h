@@ -290,8 +290,8 @@ QList<Placement> selectedObjects(const PageObjects &po, const QList<QRect> &sel,
 }
 
 // A double tap on the selection (xochitl's selection handler): edit the selected object(s).
-void editSelectedObjects() {
-    if (g_lastDoubleTap.isValid() && g_lastDoubleTap.elapsed() < 600) return;   // the tap overlay saw it too
+void editSelectedObjects(bool now = false) {
+    if (!now && g_lastDoubleTap.isValid() && g_lastDoubleTap.elapsed() < 600) return;   // the tap overlay saw it too
     g_lastDoubleTap.start();
     if (g_edit.box || putting()) return;
     QQuickItem *dv = documentView();
@@ -326,7 +326,7 @@ void watchDoubleTap() {
 }
 
 // Double taps anywhere on the page, seen without taking them from xochitl: a TapHandler only watches (passive grab),
-// and only while the selection tool is active. Finger only.
+// with any tool. Finger only.
 const char *kTapQml = R"QML(
 import QtQuick
 Item {
@@ -355,7 +355,7 @@ void installTapOverlay() {
         g_tapOverlay = createWithState(dv, kTapQml, "TapArea");
     }
     if (g_tapOverlay) {
-        const bool on = selectionToolActive() && !g_edit.box;
+        const bool on = !g_edit.box;   // any tool (developer, #3): a finger double tap edits the object there
         if (g_tapOverlay->property("active").toBool() != on) g_tapOverlay->setProperty("active", on);
     }
 }
@@ -367,7 +367,12 @@ bool viewToPage(QQuickItem *dv, const QPointF &p, QPointF *out);
 // selected already, edit it. Not found on the current layer: looked for on the Text objects layer (layer.h), made
 // current for it (onText); nothing there either: the user's layer comes back (the session ends unselected).
 void doubleTapAt(double x, double y, bool onText = false) {
-    if (g_edit.box || putting() || adjusting() || !selectionToolActive()) { if (onText) textSessionSelected(); return; }
+    if (g_edit.box || putting() || adjusting()) { if (onText) textSessionSelected(); return; }
+    if (!selectionToolActive()) {   // another tool: the selection tool first (selecting needs it)
+        if (useSelectionTool()) QTimer::singleShot(500, qApp, [x, y, onText] { doubleTapAt(x, y, onText); });
+        else if (onText) textSessionSelected();
+        return;
+    }
     QQuickItem *dv = documentView();
     QObject *sc = dv ? dv->property("sceneController").value<QObject *>() : nullptr;
     QPointF at;
@@ -423,6 +428,7 @@ void doubleTapAt(double x, double y, bool onText = false) {
             selectedObjects(po2, lineRects(scp), &only, &other);
             if (!other.isEmpty())
                 showHint(dvp, QStringLiteral("Handwriting over this text object is selected with it. Move it off to edit the text."));
+            else editSelectedObjects(true);   // a double tap edits the object right away (developer, #3)
         });
     });
 }
