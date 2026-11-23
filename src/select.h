@@ -418,6 +418,15 @@ void doubleTapNow(double x, double y, bool onText = false) {
     // not selected, or selected with other handwriting: select this object alone
     g_lastDoubleTap.start();
     TLOG("double tap: selecting a text object (%d strokes)", hit->matched);
+    if (onText) {   // nothing but objects on the Text objects layer: one rect selects it, then the edit box
+        QPointer<QObject> scp(sc);
+        selectRect(sc, hit->box.toAlignedRect().adjusted(-2, -2, 2, 2), 0);
+        QTimer::singleShot(250, sc, [scp] {
+            textSessionSelected();
+            if (scp && scp->property("selectionItemCount").toInt() > 0) editSelectedObjects(true);
+        });
+        return;
+    }
     endSelection(sc, dv);
     QPointer<QObject> scp(sc);
     QPointer<QQuickItem> dvp(dv);
@@ -445,8 +454,8 @@ void doubleTapNow(double x, double y, bool onText = false) {
 // is not a double tap if an undo or redo came with it.
 void doubleTapAt(double x, double y) {
     TLOG("double tap seen at %.0f, %.0f", x, y);
-    QTimer::singleShot(450, qApp, [x, y] {
-        if (g_anyUserStep.isValid() && g_anyUserStep.elapsed() < 900) { TLOG("double tap: an undo/redo gesture, left alone"); return; }
+    QTimer::singleShot(350, qApp, [x, y] {
+        if (g_anyUserStep.isValid() && g_anyUserStep.elapsed() < 800) { TLOG("double tap: an undo/redo gesture, left alone"); return; }
         doubleTapNow(x, y);
     });
 }

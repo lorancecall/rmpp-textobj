@@ -100,7 +100,7 @@ void startTextSession(QPointer<QObject> scp, const QString &page, int home, int 
     g_ls.active = g_ls.selecting = true;
     g_ls.since.start();
     setLayer(scp, text);
-    QTimer::singleShot(400, scp, [scp, select] {
+    QTimer::singleShot(250, scp, [scp, select] {
         if (!scp || !g_ls.active) return;
         if (select) select();
     });
@@ -119,36 +119,25 @@ void textSessionSelected() {
 
 void afterPendingStep(bool undo);   // edit.h
 
-// The selection ended: the user's layer back. Untouched: undo S1; moved or resized: S2. A move is applied a moment
-// after the selection ends, so the layer is compared 600 ms later; and the undo is checked: if it changed the
-// layer's strokes, it took a move (not seen in time), which is redone, and S2 follows. If it changed nothing (an undo
-// right after a selection ends is ignored), it is sent again.
-void switchBack(QPointer<QObject> scp, int home, int text, int pending, const QSet<QString> &keys, int tries = 0) {
-    QObject *sc = scp;
-    if (!sc) return;
-    if (sc->property("currentLayer").toInt() == home) {
-        TLOG("text layer: back to layer %d (switch undone)", home + 1);
-        if (pending) QTimer::singleShot(500, qApp, [pending] { afterPendingStep(pending == 1); });
-        return;
-    }
-    if (tries > 0 && layerKeys(sc) != keys) {   // the undo took a move
-        ownUndoRedo(sc, false);
-        QTimer::singleShot(500, qApp, [scp, home, pending] {
-            if (!scp) return;
-            setLayer(scp, home);
-            TLOG("text layer: the object was moved: back to layer %d (a step of its own)", home + 1);
-            if (pending) QTimer::singleShot(500, qApp, [pending] { afterPendingStep(pending == 1); });
-        });
-        return;
-    }
-    if (tries >= 3) { TLOG("text layer: the switch back was not taken: left on the text layer"); return; }
-    if (tries > 0) TLOG("text layer: switch back sent again");
-    ownUndoRedo(sc, true);
-    QTimer::singleShot(500, qApp, [scp, home, text, pending, keys, tries] { switchBack(scp, home, text, pending, keys, tries + 1); });
-}
-
+// The selection ended: the user's layer back (S2). A move is applied a moment after the selection ends, so the
+// layer is compared 600 ms later.
 void moveStraysThenSwitch(QPointer<QObject> scp, int text, int home);
 int strayCount(QObject *sc);
+
+// Every selection on the Text objects layer leaves two steps in the history: the switch there (S1) and the switch
+// back (S2), with whatever was done in between. Untouched, the pair changes nothing the user sees: an undo or redo
+// that meets it goes on through it to the user's own step (settleLayer -> leftTextLayer). Undoing S1 instead (the
+// earlier way) left it in the redo history: the redo button came on after a mere tap outside (developer, cb57b732).
+// The pairs in history order; g_pairIdx of them are done (not undone).
+QList<bool> g_pairs;   // true: untouched (the user sees nothing)
+int g_pairIdx = 0;
+
+void pushPair(bool untouched) {
+    while (g_pairs.size() > g_pairIdx) g_pairs.removeLast();   // a new step cut the redo history
+    g_pairs << untouched;
+    ++g_pairIdx;
+    if (g_pairs.size() > 200) { g_pairs.removeFirst(); --g_pairIdx; }
+}
 
 void endTextSession() {
     QObject *sc = g_ls.sc;
@@ -164,18 +153,16 @@ void endTextSession() {
         // a stroke written on it (a pen right after a tool change): to the user's layer; only if every object is
         // still found (an object not recognized after an edit would look like strays)
         if (strayCount(sc) > 0 && objects >= 0 && objectCount(sc) >= objects) {
+            pushPair(false);
             moveStraysThenSwitch(scp, text, home);
             if (pending) QTimer::singleShot(2500, qApp, [pending] { afterPendingStep(pending == 1); });
             return;
         }
-        const QSet<QString> keys = layerKeys(sc);
-        if (keys != start || start.isEmpty()) {
-            setLayer(sc, home);
-            TLOG("text layer: object changed, back to layer %d (a step of its own)", home + 1);
-            if (pending) QTimer::singleShot(500, qApp, [pending] { afterPendingStep(pending == 1); });
-            return;
-        }
-        switchBack(scp, home, text, pending, keys);
+        const bool untouched = layerKeys(sc) == start && !start.isEmpty();
+        pushPair(untouched);
+        setLayer(sc, home);
+        TLOG("text layer: back to layer %d (%s)", home + 1, untouched ? "untouched: an undo or redo passes through" : "object changed");
+        if (pending) QTimer::singleShot(500, qApp, [pending] { afterPendingStep(pending == 1); });
     });
 }
 
@@ -212,7 +199,16 @@ void settleLayer(bool undo, int n) {
     if (!sc || g_ls.active || g_userTextLayer) return;
     const int t = textLayer(sc);
     if (t < 0 || sc->property("currentLayer").toInt() != t) {
-        if (n > 0) TLOG("text layer: %d more %s step(s) to leave it", n, undo ? "undo" : "redo");
+        if (n > 0) {
+            TLOG("text layer: %d more %s step(s) to leave it", n, undo ? "undo" : "redo");
+            bool untouched = false;   // the pair just passed
+            if (undo && g_pairIdx > 0) untouched = g_pairs.value(--g_pairIdx);
+            else if (!undo && g_pairIdx < g_pairs.size()) untouched = g_pairs.value(g_pairIdx++);
+            if (untouched) {
+                TLOG("text layer: an untouched selection passed: the %s goes on", undo ? "undo" : "redo");
+                QTimer::singleShot(300, qApp, [undo] { userStep(undo, true); });
+            }
+        }
         return;
     }
     if (n >= 20) { TLOG("text layer: still current after 20 steps"); return; }
@@ -317,6 +313,8 @@ void watchLayers() {
     if (sig < 0 || sel < 0) return;
     sc->setProperty("_rmppTextobjLayers", true);
     g_userTextLayer = false;
+    g_pairs.clear();   // a new document: a new history
+    g_pairIdx = 0;
     // a page opened with the Text objects layer current (seen on the device, cause not found): the user's layer
     // again, once the page has settled (no scene calls while a page loads: xochitl crashed then)
     QPointer<QObject> scp(sc);
