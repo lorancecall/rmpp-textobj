@@ -217,44 +217,69 @@ QObject *pageScene(QString *page) {
     return sc;
 }
 
-void afterUndoRedo(bool undo, LastConv c, int tries = 0) {
+const char *stateName(ConvState s) {
+    return s == ConvState::Result ? "result" : s == ConvState::Start ? "start" : s == ConvState::Neither ? "neither" : "other";
+}
+
+// Once the user's undo (redo) is applied, from the conversion's result to neither side on the page: one more step.
+// An undo right after a selection ends is ignored (an undo while the new object is still selected ends the
+// selection first), so the extra step is checked and sent again, up to 3 times.
+void afterUndoRedo(bool undo, LastConv c, int tries = 0, int sent = 0) {
     QString page;
     QObject *sc = pageScene(&page);
     if (!sc || page != c.page) return;
     const ConvState st = convState(sc, c);
-    if (st == (undo ? ConvState::Result : ConvState::Start) && tries < 7) {   // the click not applied yet
-        QTimer::singleShot(200, qApp, [undo, c, tries] { afterUndoRedo(undo, c, tries + 1); });
+    const ConvState from = undo ? ConvState::Result : ConvState::Start, to = undo ? ConvState::Start : ConvState::Result;
+    if (sent == 0 && st == from) {   // the user's step not applied yet
+        if (tries < 15) QTimer::singleShot(200, qApp, [undo, c, tries] { afterUndoRedo(undo, c, tries + 1); });
+        else TLOG("%s: the page did not change in 3 s: left as is", undo ? "undo" : "redo");
         return;
     }
-    if (st == ConvState::Neither) {
+    if (st == ConvState::Neither && sent < 3) {
         ownUndoRedo(sc, undo);
-        TLOG("%s: conversion %s in one step", undo ? "undo" : "redo", undo ? "undone" : "redone");
+        TLOG("%s: conversion %s in one step%s", undo ? "undo" : "redo", undo ? "undone" : "redone", sent ? " (sent again)" : "");
+        QTimer::singleShot(800, qApp, [undo, c, sent] { afterUndoRedo(undo, c, 0, sent + 1); });
+        return;
     }
+    if (sent == 0 || st != to) TLOG("%s: after the step the conversion is %s", undo ? "undo" : "redo", stateName(st));
 }
 
 // Every undo and redo, from the toolbar buttons, the two-finger tap gesture or anything else, goes through the
 // scene controller, which emits aboutToUndo()/aboutToRedo() before applying it: the conversion it starts from is
 // found then, and looked at again once it is applied. Our own undo() and redo() calls (groupNewInk, the extra step
-// below) are left out.
+// above) are counted and left out: each emits the signal once; a count not used up in 3 s is dropped (a call
+// xochitl ignored).
+int g_ownSteps = 0;
 QElapsedTimer g_ownUndo;   // started when we call undo()/redo() ourselves
 
 void ownUndoRedo(QObject *sc, bool undo, int times) {
+    if (!g_ownUndo.isValid() || g_ownUndo.elapsed() > 3000) g_ownSteps = 0;
+    g_ownSteps += times;
     g_ownUndo.start();
     for (int i = 0; i < times; ++i) QMetaObject::invokeMethod(sc, undo ? "undo" : "redo");
 }
 
 void aboutToUndoRedo(bool undo) {
-    if (putting() || (g_ownUndo.isValid() && g_ownUndo.elapsed() < 2500)) return;
+    if (g_ownSteps > 0 && g_ownUndo.isValid() && g_ownUndo.elapsed() < 3000) { --g_ownSteps; return; }
+    g_ownSteps = 0;
     QString page;
     QObject *sc = pageScene(&page);
     if (!sc) return;
+    int here = 0;
     for (int i = int(g_convs.size()) - 1; i >= 0; --i) {   // the newest conversion the undo starts from
         const LastConv &c = g_convs[i];
         if (c.page != page) continue;
-        if (convState(sc, c) != (undo ? ConvState::Result : ConvState::Start)) continue;
+        ++here;
+        const ConvState st = convState(sc, c);
+        if (st != (undo ? ConvState::Result : ConvState::Start)) {
+            if (here == 1) TLOG("%s: the newest conversion on this page is at its %s", undo ? "undo" : "redo", stateName(st));
+            continue;
+        }
+        TLOG("%s from a conversion's %s", undo ? "undo" : "redo", stateName(st));
         QTimer::singleShot(300, qApp, [undo, c] { afterUndoRedo(undo, c); });
         return;
     }
+    if (here == 0 && !g_convs.isEmpty()) TLOG("%s: no conversion remembered on this page", undo ? "undo" : "redo");
 }
 
 void watchUndoRedo() {
