@@ -457,6 +457,35 @@ void layerConvStep(bool undo, LastConv c, int tries = 0) {
     });
 }
 
+// After a conversion's chain was sent: the handwriting (undo) or the object (redo) selected once it is there, then
+// queued presses are done.
+void layerConvDone(bool undo, LastConv c, int tries = 0) {
+    QString page;
+    QObject *sc = pageScene(&page);
+    if (!sc || page != c.page) { chainEnd(); return; }
+    const QSet<QString> keys = layerKeys(sc);
+    const bool there = undo ? keys.contains(c.hand) : keys == c.lAfter;
+    if (!there && tries < 12) { QTimer::singleShot(150, qApp, [undo, c, tries] { layerConvDone(undo, c, tries + 1); }); return; }
+    const bool queued = !g_chain.queued.isEmpty();
+    chainEnd();
+    if (!there) { TLOG("%s: the conversion's chain did not end where expected", undo ? "undo" : "redo"); return; }
+    if (queued) return;
+    if (undo) { selectSide(sc, c.hand); return; }
+    // redo: the object selected, as after the conversion; that is a layer switch, a new step: only when nothing is
+    // left to redo (it would cut the redo history)
+    if (textSessionActive() || sc->property("redoAvailable").toBool() || sc->property("currentLayer").toInt() != c.home) return;
+    QPointer<QObject> scp(sc);
+    const QRect sel = c.box.adjusted(-2, -2, 2, 2);
+    startTextSession(scp, page, c.home, c.text, [scp, sel] {
+        const bool switched = useSelectionTool();
+        QTimer::singleShot(switched ? 500 : 0, scp, [scp, sel] {
+            if (!scp) return;
+            selectRect(scp, sel, 0);
+            QTimer::singleShot(300, scp, [] { textSessionSelected(); });
+        });
+    });
+}
+
 QElapsedTimer g_userStepAt;   // layer.h: layer changes right after the user's undo or redo are not a pick
 extern int g_pairIdx;
 
@@ -486,10 +515,15 @@ void userStep(bool undo, bool send) {
                 return;
             }
             TLOG("%s from a conversion's %s (text layer)", undo ? "undo" : "redo", undo ? "result" : "start");
-            chainStart(undo, c.steps + 1);
-            const LastConv cc = c;
-            QTimer::singleShot(undo ? 600 : 300, qApp, [undo, cc] { layerConvStep(undo, cc); });
+            // the rest of the conversion sent right behind the user's step (undo calls are applied in order): waiting
+            // to see the user's step first showed a state between the two (handwriting gone, no object yet), which
+            // looked like a step of its own (developer, 1ae3249f)
             if (send) ownUndoRedo(sc, undo);
+            ownUndoRedo(sc, undo, c.steps + 1);
+            TLOG("%s: conversion %s in one step (text layer, %d step(s) more)", undo ? "undo" : "redo", undo ? "undone" : "redone", c.steps + 1);
+            chainStart(undo, 0);   // presses meanwhile are queued until it is through
+            const LastConv cc = c;
+            QTimer::singleShot(250, qApp, [undo, cc] { layerConvDone(undo, cc); });
             return;
         }
         const ConvState st = convState(sc, c);

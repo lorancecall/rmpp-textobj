@@ -95,11 +95,16 @@ disabled in place). Only the button items are touched: changing a row's `layer*E
 its buttons (they flickered). Applied before every frame (`QQuickWindow::afterAnimating`) for 4 s after the layers
 button is pressed, so nothing shows for a frame.
 
-### Object mode (planned)
+### Object mode
 
-T picked in the layers menu: dashed boxes on every object (overlay, follows zoom and scrolling), a tap edits (a tap
-where objects overlap: a short message), drag moves, lasso multi-selects (Edit off for more than one); pen and eraser
-blocked. The same overlay will let a double tap on an object take the tap before xochitl's typed text does.
+T picked in the layers menu: the selection tool is turned on. Choosing another tool (pen, eraser, text) while T is
+current makes the user's writing layer (the topmost other layer) current first, so ink never goes onto T; that switch
+is a step the user started. A page that opens on T gets only the watch: nothing is switched until the user changes
+the tool.
+
+Planned: dashed boxes on every object (overlay, follows zoom and scrolling), a tap edits (a tap where objects
+overlap: a short message), drag moves, lasso multi-selects (Edit off for more than one). The same overlay will let a
+double tap on an object take the tap before xochitl's typed text does.
 
 ## Undo and redo
 
@@ -112,9 +117,12 @@ All in `aboutToUndoRedo` (edit.h), for every undo and redo:
 3. **Session open?** The press is kept until the session ends (above).
 4. **userStep:** the newest conversion on the page the step starts from:
    - **T conversion, undo, from its result** (L as right after it): if its selection's pair is still on top, the pair
-     goes first (settle); else, once the undo applied (it took B, invisible from L), `steps + 1` more undos
-     (X4..X1, A): the handwriting is back, selected as soon as it is there.
-   - **T conversion, redo, from its start**: once the handwriting is gone (A redone), `steps + 1` more redos.
+     goes first (settle); else the user's undo takes B, and `steps + 1` more undos (X4..X1, A) are sent right behind
+     it: the handwriting is back, selected as soon as it is there.
+   - **T conversion, redo, from its start**: the user's redo takes A, and `steps + 1` more redos (X1..X4, B) are sent
+     right behind it.
+   - Sent right behind, not after seeing the user's step: undo calls are applied in order, and waiting showed the
+     state between (handwriting gone, no object yet) as if it were a step (1ae3249f).
    - **L conversion** (object on L, or an edit on T while T is current): the one-layer chain of #6/#15 (result ->
      neither -> one more step; resent only if the page did not change at all).
 5. **Settle:** after a step that leaves T current, one more step the same way until L is current, **only through a
@@ -148,6 +156,8 @@ All in `aboutToUndoRedo` (edit.h), for every undo and redo:
 | cb57b732 | One undo took several steps | Several settles at once; toolbar taps seen as double taps | One settle at a time; toolbar strip excluded; look on T only near a known object |
 | 8798ea08 | Extra step when undoing a conversion | The selection's pair after it was taken for the conversion's undo | The conversion remembers its pair; the pair goes first |
 | 8798ea08 | Pen-tool double taps missed | TapHandler's double tap | Taps counted by hand |
+| 1ae3249f | An extra step (handwriting gone, object not there yet) on redo, and on undo after more strokes | The chain waited to see the user's step before sending the rest | The rest sent right behind the user's step |
+| 1ae3249f | Pen ink went onto T when the user had picked it | Nothing kept the pen off T | Object mode: the selection tool on pick; another tool chosen: the writing layer current |
 | 5a45c7d7 | Notebook broken: tool switched to the lasso on open, writing went to T, Layer 1 could not be picked (jumped back) | Old page with T on top opened on T; the open fallback turned on the lasso to move the new strokes and selected none; then every undo ran settle up to 20 steps (T current), undoing the user's strokes and their own switch to Layer 1 | Nothing on open (T current = the user's pick); settle only through a pair we made, at most 8 steps; strays moved only with the selection tool already on and exactly selected |
 
 **Known limits.** Typed text over an object takes a double tap there first (fixed with the object-mode overlay,

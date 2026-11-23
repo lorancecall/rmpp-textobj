@@ -284,6 +284,8 @@ void settleLayer(bool undo, int n) {
 
 // The user changed the current layer (layers menu): picking the Text objects layer is the user's own choice.
 
+void enterObjectMode();
+
 void layerChanged() {
     QString page;
     QObject *sc = pageScene(&page);
@@ -294,7 +296,48 @@ void layerChanged() {
     const bool on = sc->property("currentLayer").toInt() == textLayer(sc);
     if (on != g_userTextLayer) TLOG("text layer: %s by the user", on ? "picked" : "left");
     g_userTextLayer = on;
+    if (on) enterObjectMode();
 }
+
+// The Text objects layer picked by the user: object mode. The selection tool is turned on; choosing another tool
+// (pen, eraser, text) while that layer is current makes the user's writing layer current first, so ink never goes
+// onto the Text objects layer (developer, 1ae3249f). The switch is a step the user started (by picking the tool).
+QPointer<QTimer> g_objectMode;
+QPointer<QQuickItem> g_objectModeTool;   // the tool when the watch started: only a change of tool counts
+
+void enterObjectModeWatch() {
+    g_objectModeTool = activeToolButton();
+    if (!g_objectMode) {
+        g_objectMode = new QTimer(qApp);
+        g_objectMode->setInterval(150);
+        QObject::connect(g_objectMode, &QTimer::timeout, qApp, [] {
+            QString page;
+            QObject *sc = pageScene(&page);
+            const int t = textLayer(sc);
+            if (!sc || t < 0 || sc->property("currentLayer").toInt() != t || !g_userTextLayer) { g_objectMode->stop(); return; }
+            QQuickItem *tool = activeToolButton();
+            if (tool == g_objectModeTool) return;
+            g_objectModeTool = tool;
+            if (selectionToolActive() || !tool) return;
+            int home = -1;
+            for (int i = sc->property("layerCount").toInt() - 1; i >= 0; --i) if (i != t) { home = i; break; }
+            g_objectMode->stop();
+            if (home < 0) return;
+            g_userTextLayer = false;
+            setLayer(sc, home);
+            TLOG("text layer: another tool chosen on it: layer %d current for writing", home + 1);
+        });
+    }
+    g_objectMode->start();
+}
+
+// Picked in the layers menu: the selection tool too. A page that opens on it: only the watch (nothing on open).
+void enterObjectMode() {
+    useSelectionTool();
+    QTimer::singleShot(300, qApp, [] { enterObjectModeWatch(); });   // after the tool switch, so it is not taken for a change
+}
+
+void enterObjectModeWatchOnly() { enterObjectModeWatch(); }
 
 // Strokes on the Text objects layer that are not part of a text object (nor a mark on one): written there while
 // that layer was current by mistake (a page opened on it, developer's "테" on 0e3040b5). Moved to the user's layer
@@ -407,6 +450,9 @@ void watchLayers() {
         if (t >= 0 && scp->property("currentLayer").toInt() == t) {
             g_userTextLayer = true;
             TLOG("text layer: the page opened on it: left as it is (the user's layer)");
+            if (!g_objectMode || !g_objectMode->isActive()) {   // no tool switch on open: only watch for another tool
+                enterObjectModeWatchOnly();
+            }
         }
     });
     auto *hook = new SignalHook;
