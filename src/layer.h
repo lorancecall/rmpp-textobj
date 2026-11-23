@@ -276,6 +276,8 @@ void toolChanged() {
     switchLayer(sc, w);
 }
 
+bool g_moved = false;   // a selection was moved or resized: one step when it ends
+
 // Activity that may be a step of its own (edit.h groupsUnknown): a pen stroke (not a lasso), a move or resize, typed
 // text. A selection ending on the Text objects layer reads its boxes again.
 void watchLayers() {
@@ -283,6 +285,7 @@ void watchLayers() {
     QObject *sc = dv ? dv->property("sceneController").value<QObject *>() : nullptr;
     if (!sc || sc->property("_rmppTextobjLayers").toBool()) return;
     sc->setProperty("_rmppTextobjLayers", true);
+    g_moved = false;
     g_undoGroups.clear();   // a document opened: a new history (closing one clears xochitl's: probed)
     g_redoGroups.clear();
     g_groupsKnown = false;
@@ -295,14 +298,23 @@ void watchLayers() {
         QMetaObject::connect(o, i, h, QObject::staticMetaObject.methodCount(), Qt::DirectConnection, nullptr);
     };
     hook(sc, "currentLayerChanged()", [] { QTimer::singleShot(0, qApp, [] { layerChanged(); }); });
+    // A move or resize is one step of its own, committed when the selection ends (probed): it becomes a group of 1
+    // on top, so the groups under it stay (device, 2351692b: a move after a conversion dropped them, and the
+    // conversion then took one press per step).
     hook(sc, "pendingEditChanged()", [] {   // also emitted, unchanged, during undo: only a real transform counts
         QString p;
         QObject *s = pageScene(&p);
         if (!s || putting() || adjusting() || g_own > 0) return;
-        if (!s->property("pendingEdit").value<QTransform>().isIdentity()) groupsUnknown("a move or resize");
+        if (!s->property("pendingEdit").value<QTransform>().isIdentity()) g_moved = true;
     });
     hook(sc, "rootDocumentLengthChanged()", [] { if (!putting() && g_own == 0) groupsUnknown("typed text"); });
     hook(sc, "selectionCleared()", [] {
+        if (g_moved) {
+            g_moved = false;
+            QString p;
+            QObject *s = pageScene(&p);
+            if (s && !putting() && g_own == 0) { TLOG("a move or resize: one step"); pushGroup(s, p, 1, false); }
+        }
         QTimer::singleShot(700, qApp, [] { QString p; if (QObject *s = pageScene(&p)) readTextBoxes(s); });
     });
     if (QObject *ph = dv->property("penHandler").value<QObject *>())

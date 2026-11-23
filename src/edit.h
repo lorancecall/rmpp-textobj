@@ -82,7 +82,8 @@ void pushGroup(QObject *sc, const QString &page, int n, bool merge) {
     // conversion leaves its object selected; an empty fingerprint is not checked)
     auto take = std::make_shared<std::function<void(int)>>();
     *take = [scp, idx, take](int tries) {
-        if (!scp || idx != g_undoGroups.size() - 1 || !g_undoGroups[idx].post.isEmpty()) return;   // no longer on top
+        // no longer on top (a move pushed over it while the object was still selected): left unchecked
+        if (!scp || idx != g_undoGroups.size() - 1 || !g_undoGroups[idx].post.isEmpty()) return;
         if (scp->property("selectionItemCount").toInt() == 0) { g_undoGroups[idx].post = pageSig(scp); return; }
         if (tries < 150) QTimer::singleShot(400, qApp, [take, tries] { (*take)(tries + 1); });
     };

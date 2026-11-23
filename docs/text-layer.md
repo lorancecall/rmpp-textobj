@@ -110,13 +110,14 @@ Each of our actions is one **group** of n steps on top of xochitl's history:
 | Conversion | 2, plus 3-4 when T was made |
 | Add text object | 1, plus 3-4 when T was made |
 | Edit | 2 |
+| A move or resize (committed when the selection ends) | 1 (the groups under it stay) |
 | Our layer switch | 1 + the group under it if that is still on top, else 2 (with the step before it), or 1 at the start of the history |
 
 How a press is handled:
 - A press (button or gesture) while a group is on top: the other n - 1 steps are sent **inside**
   `aboutToUndo`/`aboutToRedo`, and the group moves to the other side (undone or redone).
 - Our own calls are told by a re-entrancy count.
-- **A group is on top only while nothing else happened.** A pen stroke, a move or resize, typed text, another page, or
+- **A group is on top only while nothing else happened.** A pen stroke, typed text, another page, or
   a press that was not one of ours marks all groups unknown.
 - An undo also compares the page with the fingerprint taken after the group (page, layer names and order, current
   layer, its strokes, typed text length).
