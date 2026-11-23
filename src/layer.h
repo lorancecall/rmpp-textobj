@@ -109,10 +109,16 @@ void startTextSession(QPointer<QObject> scp, const QString &page, int home, int 
 int objectCount(QObject *sc);
 
 // Once the selection on the Text objects layer is made: what is there now (to tell a move at the end).
+// Where the objects on the Text objects layer were when it was last current, per page (read at the start and end of
+// each selection there): a double tap far from all of them does not switch there just to look (a switch is a step).
+QHash<QString, QList<QRectF>> g_textBoxes;
+void rememberTextBoxes(QObject *sc);
+
 void textSessionSelected() {
     if (!g_ls.active || !g_ls.sc) return;
     g_ls.start = layerKeys(g_ls.sc);
     g_ls.objects = objectCount(g_ls.sc);
+    rememberTextBoxes(g_ls.sc);
     g_ls.selecting = false;
     TLOG("text layer: object selected (%lld strokes on the layer)", (long long)g_ls.start.size());
 }
@@ -159,6 +165,7 @@ void endTextSession() {
             return;
         }
         const bool untouched = layerKeys(sc) == start && !start.isEmpty();
+        if (!untouched) rememberTextBoxes(sc);
         pushPair(untouched);
         setLayer(sc, home);
         TLOG("text layer: back to layer %d (%s)", home + 1, untouched ? "untouched: an undo or redo passes through" : "object changed");
@@ -193,13 +200,20 @@ void checkTextSession() {
 // user), one more step the same way, until the user's layer is current.
 bool g_userTextLayer = false;   // the user picked the Text objects layer (layers menu)
 
+// One settle at a time (several ran at once and took several steps for one press: developer, cb57b732); presses
+// meanwhile are queued like during a conversion's chain (edit.h chainPress).
+bool g_settling = false;
+
 void settleLayer(bool undo, int n) {
     QString page;
     QObject *sc = pageScene(&page);
-    if (!sc || g_ls.active || g_userTextLayer) return;
+    if (n == 0 && g_settling) return;
+    if (!sc || g_ls.active || g_userTextLayer) { if (n > 0) { g_settling = false; chainEnd(); } return; }
     const int t = textLayer(sc);
     if (t < 0 || sc->property("currentLayer").toInt() != t) {
         if (n > 0) {
+            g_settling = false;
+            chainEnd();
             TLOG("text layer: %d more %s step(s) to leave it", n, undo ? "undo" : "redo");
             bool untouched = false;   // the pair just passed
             if (undo && g_pairIdx > 0) untouched = g_pairs.value(--g_pairIdx);
@@ -211,7 +225,11 @@ void settleLayer(bool undo, int n) {
         }
         return;
     }
-    if (n >= 20) { TLOG("text layer: still current after 20 steps"); return; }
+    if (n >= 20) { TLOG("text layer: still current after 20 steps"); g_settling = false; chainEnd(); return; }
+    if (n == 0) {
+        g_settling = true;
+        if (!g_chain.active) chainStart(undo, 0);
+    }
     if (!undo && !sc->property("redoAvailable").toBool()) {
         // a redo of a switch we had undone (it stays in the redo history) with nothing after it: switch back as a
         // new step. Undoing it again left it on top of the redo history, so every redo redid it (stuck, device
@@ -220,6 +238,8 @@ void settleLayer(bool undo, int n) {
         for (int i = sc->property("layerCount").toInt() - 1; i >= 0; --i) if (i != t) { home = i; break; }
         if (home >= 0) setLayer(sc, home);
         TLOG("text layer: redo ended on it: back to layer %d (a step of its own)", home + 1);
+        g_settling = false;
+        chainEnd();
         return;
     }
     ownUndoRedo(sc, undo);
@@ -255,6 +275,22 @@ QList<int> strayIndexes(QObject *sc, PageObjects *out) {
     QList<int> strays;
     for (int i = 0; i < out->rects.size(); ++i) if (!keep.contains(i)) strays << i;
     return strays;
+}
+
+void rememberTextBoxes(QObject *sc) {
+    QQuickItem *dv = documentView();
+    const QString page = dv ? dv->property("currentPageId").toString() : QString();
+    if (page.isEmpty()) return;
+    QList<QRectF> boxes;
+    for (const Placement &p : findObjects(sc, page, false).found) boxes << p.box;
+    g_textBoxes[page] = boxes;
+}
+
+// Could a text object of the Text objects layer be at `at`: no boxes known for the page yet, or one near it.
+bool textObjectMaybeAt(const QString &page, const QPointF &at) {
+    if (!g_textBoxes.contains(page)) return true;
+    for (const QRectF &b : g_textBoxes.value(page)) if (b.adjusted(-60, -60, 60, 60).contains(at)) return true;
+    return false;
 }
 
 int objectCount(QObject *sc) {

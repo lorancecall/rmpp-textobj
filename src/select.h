@@ -367,6 +367,8 @@ bool viewToPage(QQuickItem *dv, const QPointF &p, QPointF *out);
 // Double tap at x, y (DocumentView coordinates) with the selection tool: select the text object there; if it is
 // selected already, edit it. Not found on the current layer: looked for on the Text objects layer (layer.h), made
 // current for it (onText); nothing there either: the user's layer comes back (the session ends unselected).
+bool textObjectMaybeAt(const QString &page, const QPointF &at);   // layer.h
+
 void doubleTapNow(double x, double y, bool onText = false) {
     if (g_edit.box || putting() || adjusting()) {
         TLOG("double tap: busy (edit box %d, putting %d, adjusting %d)", g_edit.box ? 1 : 0, putting() ? 1 : 0, adjusting() ? 1 : 0);
@@ -404,6 +406,7 @@ void doubleTapNow(double x, double y, bool onText = false) {
         const int t = textLayer(sc), cur = sc->property("currentLayer").toInt();
         if (onText) { TLOG("double tap: no text object here on the text layer either"); textSessionSelected(); }
         else if (t >= 0 && t != cur && !textSessionActive()) {
+            if (!textObjectMaybeAt(pageId, at)) { TLOG("double tap: no text object near it"); return; }
             g_lastDoubleTap.start();
             startTextSession(QPointer<QObject>(sc), pageId, cur, t, [x, y] { doubleTapNow(x, y, true); });
         }
@@ -453,6 +456,9 @@ void doubleTapNow(double x, double y, bool onText = false) {
 // double tap too, and starting a selection then cleared the redo history (device, 0d009cd3): wait a moment, and it
 // is not a double tap if an undo or redo came with it.
 void doubleTapAt(double x, double y) {
+    // taps on the toolbar (its undo and redo buttons, pressed quickly) are not on the page
+    if (x < 130 && findAnywhere([](QQuickItem *i) { return i->objectName() == QLatin1String("undoButton") && i->isVisible(); }))
+        return;
     TLOG("double tap seen at %.0f, %.0f", x, y);
     QTimer::singleShot(350, qApp, [x, y] {
         if (g_anyUserStep.isValid() && g_anyUserStep.elapsed() < 800) { TLOG("double tap: an undo/redo gesture, left alone"); return; }

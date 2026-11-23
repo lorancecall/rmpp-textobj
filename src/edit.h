@@ -403,14 +403,22 @@ void layerConvStep(bool undo, LastConv c, int tries = 0) {
         g_chain.need = 0;
         if (n > 0) ownUndoRedo(sc, true, n);
         TLOG("undo: conversion undone in one step (text layer, %d step(s) more, %d by presses)", c.steps + 1, c.steps + 1 - n);
-        QTimer::singleShot(1500, qApp, [c] {   // the handwriting back, selected as before the conversion
+        // the handwriting back, selected as before the conversion: as soon as it is there (it showed late)
+        auto back = std::make_shared<std::function<void(int)>>();
+        *back = [c, back](int tries) {
             QString page;
             QObject *sc = pageScene(&page);
+            if (!sc || page != c.page) { chainEnd(); return; }
+            if (!layerKeys(sc).contains(c.hand) && tries < 10) {
+                QTimer::singleShot(150, qApp, [back, tries] { (*back)(tries + 1); });
+                return;
+            }
+            const bool queued = !g_chain.queued.isEmpty();
             chainEnd();
-            if (!sc || page != c.page) return;
             if (!layerKeys(sc).contains(c.hand)) TLOG("undo: the handwriting is not all back");
-            else if (g_chain.queued.isEmpty()) selectSide(sc, c.hand);
-        });
+            else if (!queued) selectSide(sc, c.hand);
+        };
+        QTimer::singleShot(200, qApp, [back] { (*back)(0); });
         return;
     }
     if (keys == c.lBefore && tries < 15) {   // not applied yet
@@ -422,7 +430,7 @@ void layerConvStep(bool undo, LastConv c, int tries = 0) {
     g_chain.need = 0;
     if (n > 0) ownUndoRedo(sc, false, n);
     TLOG("redo: conversion redone in one step (text layer, %d step(s) more, %d by presses)", c.steps + 1, c.steps + 1 - n);
-    QTimer::singleShot(1500, qApp, [c] {
+    QTimer::singleShot(900, qApp, [c] {
         // the object selected, as after the conversion; that is a layer switch, a new step, which would cut the
         // redo history: only when nothing is left to redo
         QString page;
