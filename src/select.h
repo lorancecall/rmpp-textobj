@@ -342,7 +342,20 @@ Item {
         acceptedDevices: PointerDevice.TouchScreen
         gesturePolicy: TapHandler.DragThreshold
         grabPermissions: PointerHandler.ApprovesTakeOverByAnything
-        onDoubleTapped: (eventPoint, button) => tobj.command = "dtap:" + eventPoint.position.x + ":" + eventPoint.position.y + "#" + Date.now()
+        // two taps within 450 ms and 60 px, counted here: the TapHandler's own double tap missed some with the
+        // pen tool (developer, 8798ea08)
+        property real lastX: -1000
+        property real lastY: -1000
+        property double lastT: 0
+        onTapped: (eventPoint, button) => {
+            const p = eventPoint.position, now = Date.now()
+            if (now - lastT < 450 && Math.abs(p.x - lastX) < 60 && Math.abs(p.y - lastY) < 60) {
+                lastT = 0
+                tobj.command = "dtap:" + p.x + ":" + p.y + "#" + now
+            } else {
+                lastT = now; lastX = p.x; lastY = p.y
+            }
+        }
     }
 }
 )QML";

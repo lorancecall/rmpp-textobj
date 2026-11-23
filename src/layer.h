@@ -40,12 +40,28 @@ void setLayer(QObject *sc, int i) {
     QMetaObject::invokeMethod(sc, "setCurrentLayer", Q_ARG(int, i));
 }
 
-// The Text objects layer of the page, made if there is none: addLayer (which makes it current), its name, and the
-// user's layer current again; three undo steps, undone with the conversion (LastConv::steps). done(layer, steps).
-void ensureTextLayer(QPointer<QObject> scp, int home, std::function<void(int, int)> done) {
+// moveLayer's signature is not known from QML; found here (logged once): (int, int) is taken as (from, to).
+int moveLayerMethod(QObject *sc) {
+    static int idx = -2;
+    if (idx != -2) return idx;
+    idx = -1;
+    const QMetaObject *mo = sc->metaObject();
+    for (int i = 0; i < mo->methodCount(); ++i) {
+        const QMetaMethod m = mo->method(i);
+        if (m.name() != "moveLayer") continue;
+        TLOG("text layer: %s", m.methodSignature().constData());
+        if (m.methodSignature() == "moveLayer(int,int)") idx = i;
+    }
+    return idx;
+}
+
+// The Text objects layer of the page, made if there is none: addLayer (on top, made current), its name, moved to
+// the bottom (below the user's layers, as xochitl's Text row is: developer, 8798ea08), and the user's layer current
+// again; four undo steps, undone with the conversion (LastConv::steps). done(layer, steps, the user's layer now).
+void ensureTextLayer(QPointer<QObject> scp, int home, std::function<void(int, int, int)> done) {
     const int t = textLayer(scp);
-    if (t >= 0) { done(t, 0); return; }
-    if (!layerApi(scp)) { done(-1, 0); return; }
+    if (t >= 0) { done(t, 0, home); return; }
+    if (!layerApi(scp)) { done(-1, 0, home); return; }
     g_ownLayerChange.start();
     QMetaObject::invokeMethod(scp, "addLayer");
     QTimer::singleShot(400, scp, [scp, home, done] {
@@ -54,18 +70,34 @@ void ensureTextLayer(QPointer<QObject> scp, int home, std::function<void(int, in
         if (t <= home || scp->property("currentLayer").toInt() != t) {
             TLOG("text layer: addLayer did not add a current layer (%d layers, current %d)", t + 1,
                  scp->property("currentLayer").toInt());
-            done(-1, 1);
+            done(-1, 1, home);
             return;
         }
         QMetaObject::invokeMethod(scp, "setLayerName", Q_ARG(int, t), Q_ARG(QString, QString::fromLatin1(kTextLayerName)));
         QTimer::singleShot(300, scp, [scp, home, t, done] {
             if (!scp) return;
-            setLayer(scp, home);
-            QTimer::singleShot(400, scp, [scp, home, t, done] {
+            const int mv = moveLayerMethod(scp);
+            int steps = 3, text = t, h = home;
+            if (mv >= 0 && t > 0) {
+                int from = t, to = 0;
+                void *a[] = {nullptr, &from, &to};
+                g_ownLayerChange.start();
+                scp->qt_metacall(QMetaObject::InvokeMetaMethod, mv, a);
+                steps = 4;
+                text = 0;
+                h = home + 1;   // the user's layers moved up by one
+            }
+            QTimer::singleShot(300, scp, [scp, text, h, steps, done] {
                 if (!scp) return;
-                const bool ok = textLayer(scp) == t && scp->property("currentLayer").toInt() == home;
-                TLOG("text layer: %s (layer %d)", ok ? "added" : "NOT added as expected", t + 1);
-                done(ok ? t : -1, 3);
+                setLayer(scp, h);
+                QTimer::singleShot(400, scp, [scp, text, h, steps, done] {
+                    if (!scp) return;
+                    const int t2 = textLayer(scp), cur = scp->property("currentLayer").toInt();
+                    const bool ok = t2 == text && cur == h;
+                    TLOG("text layer: %s (layer %d, user's layer %d)", ok ? "added" : "NOT where expected", t2 + 1, cur + 1);
+                    if (t2 < 0 || cur == t2) { done(-1, steps, h); return; }
+                    done(t2, steps, cur);
+                });
             });
         });
     });
@@ -78,8 +110,9 @@ struct LayerSession {
     int home = -1, text = -1;
     QSet<QString> start;   // the layer's strokes once the selection is made (untouched: the same at the end)
     bool active = false, selecting = false;
-    int pending = 0;
-    int objects = -1;      // text objects found on the layer at the start (strays are moved only if none is lost)       // an undo (1) or redo (2) asked for while the object was selected
+    int pending = 0;       // an undo (1) or redo (2) asked for while the object was selected
+    int objects = -1;      // text objects found on the layer at the start (strays are moved only if none is lost)
+    bool forConv = false;  // the selection right after a conversion (its pair is remembered with it)
     QElapsedTimer since;
 };
 LayerSession g_ls;
@@ -150,9 +183,10 @@ void endTextSession() {
     g_ls.active = false;
     if (!sc) return;
     const int home = g_ls.home, text = g_ls.text, pending = g_ls.pending, objects = g_ls.objects;
+    const bool forConv = g_ls.forConv;
     const QSet<QString> start = g_ls.start;
     QPointer<QObject> scp(sc);
-    QTimer::singleShot(600, qApp, [scp, home, text, pending, start, objects] {
+    QTimer::singleShot(600, qApp, [scp, home, text, pending, start, objects, forConv] {
         QObject *sc = scp;
         if (!sc) return;
         if (sc->property("currentLayer").toInt() != text) { TLOG("text layer: ended on another layer"); return; }
@@ -160,6 +194,7 @@ void endTextSession() {
         // still found (an object not recognized after an edit would look like strays)
         if (strayCount(sc) > 0 && objects >= 0 && objectCount(sc) >= objects) {
             pushPair(false);
+            if (forConv) convPairDone(g_pairIdx);
             moveStraysThenSwitch(scp, text, home);
             if (pending) QTimer::singleShot(2500, qApp, [pending] { afterPendingStep(pending == 1); });
             return;
@@ -167,6 +202,7 @@ void endTextSession() {
         const bool untouched = layerKeys(sc) == start && !start.isEmpty();
         if (!untouched) rememberTextBoxes(sc);
         pushPair(untouched);
+        if (forConv) convPairDone(g_pairIdx);
         setLayer(sc, home);
         TLOG("text layer: back to layer %d (%s)", home + 1, untouched ? "untouched: an undo or redo passes through" : "object changed");
         if (pending) QTimer::singleShot(500, qApp, [pending] { afterPendingStep(pending == 1); });
@@ -174,6 +210,7 @@ void endTextSession() {
 }
 
 bool textSessionActive() { return g_ls.active; }
+void markSessionForConv() { g_ls.forConv = true; }
 
 // An undo or redo while the object is selected there: xochitl only ends the selection; it is applied once the
 // user's layer is back (endTextSession).

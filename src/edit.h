@@ -28,12 +28,16 @@ struct LastConv {
     int text = -1, home = -1, steps = 0;
     QSet<QString> lAfter, lBefore;
     QRect box;   // the new ink, to select it after a redo
+    int pair = 0;   // layer.h g_pairIdx once the selection after it ended: its pair is on top while g_pairIdx >= pair
 };
 QList<LastConv> g_convs;
+// The selection right after the newest conversion ended: its pair of layer switches is remembered with it.
+void convPairDone(int idx) { if (!g_convs.isEmpty() && g_convs.last().text >= 0) g_convs.last().pair = idx; }
 void ownUndoRedo(QObject *sc, bool undo, int times = 1);   // below: our own undo()/redo() calls
 // layer.h
 int textLayer(QObject *sc);
-void ensureTextLayer(QPointer<QObject> scp, int home, std::function<void(int, int)> done);
+void ensureTextLayer(QPointer<QObject> scp, int home, std::function<void(int, int, int)> done);
+void markSessionForConv();
 void startTextSession(QPointer<QObject> scp, const QString &page, int home, int text, std::function<void()> select);
 void textSessionSelected();
 bool textSessionActive();
@@ -89,7 +93,7 @@ void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k, cons
             return;
         }
         // into the Text objects layer (layer.h), unless that is where the user is (an edit there)
-        auto place = [scp, items, box, add, k, tries, layer, before, page, hand](int text, int steps) {
+        auto place = [scp, items, box, add, k, tries, before, page, hand](int text, int steps, int layer) {
             QObject *sc = scp;
             if (!sc) return;
             const bool toText = text >= 0 && text != layer;
@@ -131,6 +135,7 @@ void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k, cons
                 }
                 const QRect sel = box.toAlignedRect().adjusted(-2, -2, 2, 2);
                 startTextSession(scp, page, layer, text, [scp, sel] {
+                    markSessionForConv();
                     const bool switched = useSelectionTool();
                     QTimer::singleShot(switched ? 500 : 0, scp, [scp, sel] {
                         if (!scp) return;
@@ -140,7 +145,7 @@ void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k, cons
                 });
             });
         };
-        if (textSessionActive()) place(-1, 0);
+        if (textSessionActive()) place(-1, 0, layer);
         else ensureTextLayer(scp, layer, place);
     };
     QTimer::singleShot(400, sc, [scp, k, check] {
@@ -453,6 +458,7 @@ void layerConvStep(bool undo, LastConv c, int tries = 0) {
 }
 
 QElapsedTimer g_userStepAt;   // layer.h: layer changes right after the user's undo or redo are not a pick
+extern int g_pairIdx;
 
 // The user's undo or redo, about to be applied (send: we apply it, for one asked for while an object was selected on
 // the Text objects layer).
@@ -471,6 +477,14 @@ void userStep(bool undo, bool send) {
             if (cur != c.home) continue;
             const QSet<QString> keys = layerKeys(sc);
             if (keys != (undo ? c.lAfter : c.lBefore)) continue;
+            if (undo && c.pair > 0 && g_pairIdx >= c.pair) {
+                // the layer switches of the selection after it are on top: they go first (settleLayer), then the
+                // conversion (an extra step showed when the first undo was taken for the conversion's: 8798ea08)
+                TLOG("undo: a selection's switches come first (text layer)");
+                if (send) ownUndoRedo(sc, undo);
+                QTimer::singleShot(600, qApp, [undo] { settleLayer(undo); });
+                return;
+            }
             TLOG("%s from a conversion's %s (text layer)", undo ? "undo" : "redo", undo ? "result" : "start");
             chainStart(undo, c.steps + 1);
             const LastConv cc = c;
