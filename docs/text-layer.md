@@ -93,6 +93,17 @@ An edit on T (T current) is A', B' on T: one group of 2.
 
 Planned: dashed boxes on every object, a tap edits, drag moves, lasso multi-selects (edit off for more than one).
 
+### Objects kept apart
+
+- A conversion onto Text objects: if the new object would overlap a known object there, it is put at the nearest
+  free place (up, down, left or right, at most its own size away). With no room near, nothing is converted (a
+  message); nothing has changed by then.
+- A move or resize on Text objects (on lift): pushed the same way inside the same pending edit, so the move and the
+  push are one step (`moveSelectedItems` adds to the pending edit: probed). With no room near, the move is put back
+  (`cancelPendingEdit`: no step, probed).
+- An undo of a conversion drops its box from `textlayer.json`, and a redo puts it back, so an undone object does not
+  push the next one.
+
 ### Layers menu
 
 - The T row: up, down and merge hidden. Picking it and delete stay; rename is not blocked.

@@ -27,6 +27,7 @@ struct Group {
     QString page;
     int n = 1;
     QString post;   // pageSig once the group was done ("" not taken yet)
+    QList<QRectF> boxes;   // text objects it added (layer.h textlayer.json: dropped on undo, back on redo)
 };
 QList<Group> g_undoGroups, g_redoGroups;
 bool g_groupsKnown = false;
@@ -39,6 +40,9 @@ void ensureTextLayer(QPointer<QObject> scp, std::function<void(bool, int)> done)
 QSet<QString> layerKeys(QObject *sc);
 void rememberTextBox(const QString &page, const QRectF &box);
 QString pageSig(QObject *sc);
+bool freePlace(const QRectF &box, const QList<QRectF> &others, QPointF *offset);
+QList<QRectF> textBoxesOf(const QString &page);
+void forgetTextBox(const QString &page, const QRectF &box);
 void switchLayer(QObject *sc, int to);
 int textObjectsAt(const QString &page, const QPointF &at, QRectF *box);
 void waitFor(QPointer<QObject> scp, std::function<bool()> cond, std::function<void(bool)> next, int tries);
@@ -66,12 +70,16 @@ void groupsUnknown(const char *why) {
 
 // A group of n steps just done on top of the history. merge: it joins the group under it if that one is still on top
 // (a layer switch goes with the action next to it: one press undoes both). The fingerprint is taken a moment later.
-void pushGroup(QObject *sc, const QString &page, int n, bool merge) {
+void pushGroup(QObject *sc, const QString &page, int n, bool merge, const QList<QRectF> &boxes = {}) {
     if (!g_groupsKnown) { g_undoGroups.clear(); g_redoGroups.clear(); }
+    QList<QRectF> bs = boxes;
     if (merge && !g_undoGroups.isEmpty() && g_undoGroups.last().page == page
-        && (g_undoGroups.last().post.isEmpty() || g_undoGroups.last().post == pageSig(sc)))
-        n += g_undoGroups.takeLast().n - 1;   // the step "before" the switch is that group
-    g_undoGroups.append(Group{page, n, QString()});
+        && (g_undoGroups.last().post.isEmpty() || g_undoGroups.last().post == pageSig(sc))) {
+        const Group under = g_undoGroups.takeLast();   // the step "before" the switch is that group
+        n += under.n - 1;
+        bs += under.boxes;
+    }
+    g_undoGroups.append(Group{page, n, QString(), bs});
     if (g_undoGroups.size() > 50) g_undoGroups.removeFirst();
     g_redoGroups.clear();
     g_groupsKnown = true;
@@ -157,7 +165,7 @@ void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k, cons
         void *a3[] = {nullptr, &lay, &its, &sc1, &centre};
         sc->qt_metacall(QMetaObject::InvokeMetaMethod, add, a3);
         TLOG("new ink: %d strokes in one undo step (%d checks)%s", k, tries + 1, toText ? ", on the text layer" : "");
-        pushGroup(sc, page, g_putSteps + 1, false);
+        pushGroup(sc, page, g_putSteps + 1, false, toText ? QList<QRectF>{box} : QList<QRectF>{});
         if (toText) {
             // cloneAddAndSelectItems leaves the object selected on the Text objects layer while the writing layer is
             // current: xochitl never commits a move of that selection (device, f1b714c2: it jumped back). So the Text
@@ -258,10 +266,30 @@ void putInkNow(QPointer<QObject> scp, QPointer<QObject> php, QPointer<QQuickItem
 void putInk(QPointer<QObject> scp, QPointer<QObject> php, QPointer<QQuickItem> dvp, int /*layer*/, bool deleteSelection,
             const Placed &pl, const QString &text, const QStringList &removeIds, bool fullRefresh = false,
             const QList<Hl> &hls = {}) {
+    const int cur = scp->property("currentLayer").toInt(), t = textLayer(scp);
+    if (t >= 0 && cur != t) {   // onto the Text objects layer: kept apart from its objects, or not converted
+        QRectF box;
+        for (const QList<QPointF> &st : pl.strokes) for (const QPointF &q : st) box |= QRectF(q, QSizeF(0.01, 0.01));
+        const QString page = dvp ? dvp->property("currentPageId").toString() : QString();
+        QPointF off;
+        if (!box.isEmpty() && !freePlace(box.adjusted(-3, -3, 3, 3), textBoxesOf(page), &off)) {
+            TLOG("convert: no room near for the text object: nothing changed");
+            showHint(dvp, QStringLiteral("No room for the text object here: other text objects are in the way."));
+            return;
+        }
+        if (!off.isNull()) {
+            TLOG("convert: pushed %.0f, %.0f off another text object", off.x(), off.y());
+            Placed moved = pl;
+            for (QList<QPointF> &st : moved.strokes) for (QPointF &q : st) q += off;
+            moved.origin += off;
+            for (LineBox &l : moved.lines) l.o += off;
+            putInk(scp, php, dvp, cur, deleteSelection, moved, text, removeIds, fullRefresh, hls);
+            return;
+        }
+    }
     g_putting = true;
     g_putStarted.start();
     g_putSteps = deleteSelection ? 1 : 0;
-    const int cur = scp->property("currentLayer").toInt(), t = textLayer(scp);
     if (t >= 0 || !layerApi(scp) || (t >= 0 && cur == t)) {
         putInkNow(scp, php, dvp, deleteSelection, pl, text, removeIds, fullRefresh, hls);
         return;
@@ -351,6 +379,7 @@ void aboutToUndoRedo(bool undo) {
     const Group g = from.takeLast();
     to.append(g);
     if (g.n > 1) ownUndoRedo(sc, undo, g.n - 1);
+    for (const QRectF &b : g.boxes) { if (undo) forgetTextBox(page, b); else rememberTextBox(page, b); }
     TLOG("%s: %d step(s) in one press", undo ? "undo" : "redo", g.n);
 }
 
