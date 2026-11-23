@@ -367,6 +367,27 @@ void userStep(bool undo, bool send) {
             const int t = textLayer(sc);
             if (t >= 0 && cur == t) continue;
             if (layerKeys(sc) != (undo ? c.lAfter : c.lBefore)) continue;
+            if (!send && sc->property("selectionItemCount").toInt() > 0) {
+                // a step while something is selected only ends the selection (xochitl): look again once it has
+                // ended, and send the user's step too if it was not applied
+                TLOG("%s while selected: the conversion's chain after the selection ends", undo ? "undo" : "redo");
+                const LastConv cc = c;
+                QTimer::singleShot(600, qApp, [undo, cc] {
+                    QString page;
+                    QObject *sc = pageScene(&page);
+                    if (!sc || page != cc.page) return;
+                    const QSet<QString> keys = layerKeys(sc);
+                    const QSet<QString> start = undo ? cc.lAfter : cc.lBefore;
+                    // undo: B is unseen from here, so "not applied" cannot be told; the selection case is a redo
+                    // (the handwriting comes back selected after an undo)
+                    if (!undo && keys == start) ownUndoRedo(sc, false);
+                    else if (undo && keys == start) ownUndoRedo(sc, true);
+                    ownUndoRedo(sc, undo, cc.steps + 1);
+                    TLOG("%s: conversion %s in one step (text layer, after the selection)", undo ? "undo" : "redo", undo ? "undone" : "redone");
+                    QTimer::singleShot(250, qApp, [undo, cc] { layerConvSelect(undo, cc); });
+                });
+                return;
+            }
             if (send) ownUndoRedo(sc, undo);
             ownUndoRedo(sc, undo, c.steps + 1);
             TLOG("%s: conversion %s in one step (text layer, %d step(s) more)", undo ? "undo" : "redo", undo ? "undone" : "redone", c.steps + 1);
