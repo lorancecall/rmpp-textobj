@@ -306,6 +306,17 @@ QQuickItem *activeToolButton() {
 }
 
 // The pen in use: whether it is a highlighter, and its colour.
+// xochitl's own "Snap to text" switch in the highlighter menu (property snapHighlighterToText, found once on the
+// pen handler or an item of the UI). Highlights on text objects become bands only while it is on, as on typed text.
+// Not found: on (xochitl's default).
+bool snapToTextOn(QObject *ph) {
+    static QPointer<QObject> holder;
+    if (!holder && ph && ph->metaObject()->indexOfProperty("snapHighlighterToText") >= 0) holder = ph;
+    if (!holder)
+        holder = findAnywhere([](QQuickItem *i) { return i->metaObject()->indexOfProperty("snapHighlighterToText") >= 0; });
+    return !holder || holder->property("snapHighlighterToText").toBool();
+}
+
 bool highlighterInUse(QObject *ph, int *color, uint *argb) {
     if (!ph) return false;
     const int tool = ph->property("lineTool").toInt();

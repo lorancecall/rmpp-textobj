@@ -637,7 +637,7 @@ struct HlCapture {
 // Replaces the freehand highlighter strokes of caps by bands: the selection tool for a moment (to select and delete
 // the strokes), the bands drawn, the tool in use before tapped again, and the bands' rects recorded.
 void snapHighlights(QQuickItem *dv, QObject *sc, const QList<HlCapture> &caps) {
-    if (caps.isEmpty() || !g_state->value(QStringLiteral("snapHighlights")).toBool()) return;
+    if (caps.isEmpty() || !snapToTextOn(dv->property("penHandler").value<QObject *>())) return;
     QQuickItem *prev = activeToolButton();
     if (!prev) { TLOG("highlight recorded; no tool button to come back to: not snapped"); return; }
     TLOG("snapping %lld highlight(s); back to %s after", (long long)caps.size(), qPrintable(prev->objectName()));
@@ -719,7 +719,8 @@ void checkHighlights(QQuickItem *dv, QObject *sc, const QString &pageId, const Q
     if (!newKeys.isEmpty() && tl >= 0 && sc->property("currentLayer").toInt() != tl) {
         int color = kHighlighterYellow;
         uint argb = 0;
-        if (highlighterInUse(dv->property("penHandler").value<QObject *>(), &color, &argb)) {
+        QObject *ph = dv->property("penHandler").value<QObject *>();
+        if (highlighterInUse(ph, &color, &argb) && snapToTextOn(ph)) {
             QList<QRect> over;
             for (const QRect &r : po.rects)
                 if (newKeys.contains(rectKey(r)) && overTextObjects(pageId, r)) over << r;

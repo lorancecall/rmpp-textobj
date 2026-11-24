@@ -69,10 +69,9 @@ void loadSettings() {
     if (g_confLoaded || !QFileInfo::exists(QStringLiteral("/home/root/.local"))) return;   // /home mounts late
     g_confLoaded = true;
     QSettings s(QLatin1String(kConf), QSettings::IniFormat);
-    // highlighter strokes on text objects are replaced by bands snapped to the characters (src/highlight.h).
-    // Off by default: selecting the highlighter stroke alone over the glyphs fails on the device (OS 3.29.1);
-    // the highlight is still recorded and drawn as bands after an edit. v0.2: issue #3 (own layer).
-    g_state->insert(QStringLiteral("snapHighlights"), s.value(QStringLiteral("snapHighlights"), false).toBool());
+    Q_UNUSED(s);
+    // (snapping highlights to the characters follows xochitl's "Snap to text" switch now: snapToTextOn, highlight.h;
+    // the old snapHighlights setting is no longer read)
 }
 
 void saveSetting(const QString &key, const QVariant &v) {
