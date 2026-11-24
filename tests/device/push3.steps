@@ -1,0 +1,35 @@
+# The developer's case, closer (#3, device 2026-11-24): a two-line object with highlights moved twice, the second time
+# down and sideways onto another object, pushed further down.
+open
+object "Other object here" 650 1560
+object "Hihi there this is test" 600 1100
+tool select
+dtap 640 1100
+expect-log "edit: 1 object\(s\)"
+key ctrl+End
+key enter
+text "Heyhey hihi"
+key ctrl+a
+tap "#rmppTextobjHighlight"
+tap 1470 766
+expect-log "recorded: \d+ strokes, 1 highlight\(s\)"
+wait 3000
+tap 1300 1900
+wait 2500
+dtap 640 1100
+expect-log "edit: 1 object\(s\), 1 highlight\(s\)"
+tap 1317 766
+drag 640 1100 673 1157
+tap 1300 1900
+wait 2500
+mark
+dtap 673 1157
+expect-log "edit: 1 object\(s\), 1 highlight\(s\)"
+tap 1317 766
+mark
+drag 673 1157 711 1590
+tap 1300 1900
+expect-log "move on the text layer: 1 object\(s\) pushed"
+wait 2500
+shot push3-1-moved
+expect-no-log "found in part"

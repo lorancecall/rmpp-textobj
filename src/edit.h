@@ -903,6 +903,9 @@ void closeInkEdit() {
     g_edit.box = nullptr;
     qApp->setProperty("rmppKeyboardRefresh", QVariant());
     if (QGuiApplication::inputMethod()) QGuiApplication::inputMethod()->hide();
+    // the boxes at rest read again (none are read while the box is open): a move of the object left selected by
+    // Cancel is kept apart from the others (device 2026-11-24: "no boxes read at rest", the move not checked)
+    requestBoxes();
 }
 
 // Characters of the edit box's text that no glyph source has (shown in the box; OK is off while there are any).

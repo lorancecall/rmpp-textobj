@@ -375,7 +375,7 @@ void keepApartAfterMove(QObject *sc) {
     const QRect all(-20000, -20000, 40000, 80000);
     const QList<QRect> areaRects = lineRects(sc, &all);
     for (const QRect &r : areaRects) area |= QRectF(r);
-    TLOG("move on the text layer: pe %.2f,%.2f %.0f,%.0f; %lld moved box(es) %.0f,%.0f %.0fx%.0f (selection reported "
+    TLOG("move on the text layer: pe %.4f,%.4f %.1f,%.1f; %lld moved box(es) %.0f,%.0f %.0fx%.0f (selection reported "
          "%.0f,%.0f %.0fx%.0f); %lld other(s) %.0f,%.0f %.0fx%.0f (area query %lld in %.0f,%.0f %.0fx%.0f)",
          pe.m11(), pe.m22(), pe.dx(), pe.dy(), (long long)moving.size(), mu.x(), mu.y(), mu.width(), mu.height(),
          reported.x(), reported.y(), reported.width(), reported.height(), (long long)others.size(), ou.x(), ou.y(),

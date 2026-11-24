@@ -1,0 +1,31 @@
+# The developer's case (#3, device 2026-11-24): a one-line object edited to two lines (its old one-line record
+# still kept), highlighted, then moved onto another object and pushed: it was boxed line by line after the push.
+open
+object "Other" 330 700
+object "Hihi there this is test" 250 960
+tool select
+dtap 290 960
+expect-log "edit: 1 object\(s\)"
+key ctrl+End
+key enter
+text "Heyhey hihi"
+key ctrl+a
+tap "#rmppTextobjHighlight"
+tap 1470 766
+expect-log "recorded: \d+ strokes, 1 highlight\(s\)"
+wait 3000
+tap 1300 1900
+wait 2500
+mark
+dtap 290 960
+expect-log "double tap: selecting a text object"
+expect-log "edit: 1 object\(s\), 1 highlight\(s\)"
+tap 1317 766
+mark
+drag 290 960 290 700
+tap 1300 1900
+expect-log "move on the text layer: 1 object\(s\) pushed"
+expect-log "a move or resize: one step"
+wait 2500
+shot push2-1-moved
+expect-no-log "found in part"

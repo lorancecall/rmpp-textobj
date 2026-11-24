@@ -1,0 +1,29 @@
+# A two-line object with highlights, moved onto another one, is pushed off it and stays one object (#3, device
+# 2026-11-24: after the push it was boxed line by line). The move after the edit box's Cancel is checked too
+# (it was not: "no boxes read at rest").
+open
+object "Other" 1100 1250
+object "testing  testing testing testing testing" 1100 1500
+tool select
+dtap 1160 1500
+expect-log "edit: 1 object\(s\)"
+key ctrl+a
+tap "#rmppTextobjHighlight"
+tap 1470 766
+expect-log "recorded: \d+ strokes, 1 highlight\(s\)"
+wait 3000
+tap 1300 1900
+wait 2500
+mark
+dtap 1160 1500
+expect-log "double tap: selecting a text object"
+expect-log "edit: 1 object\(s\), 1 highlight\(s\)"
+tap 1317 766
+mark
+drag 1160 1500 1160 1210
+tap 1300 1900
+expect-log "move on the text layer: 1 object\(s\) pushed"
+expect-log "a move or resize: one step"
+wait 2500
+shot push-1-moved
+expect-no-log "found in part"

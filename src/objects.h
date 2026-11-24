@@ -502,7 +502,37 @@ PageObjects findObjects(QObject *sc, const QString &pageId, bool otherPages) {
         if (r.rects.isEmpty() || r.n > po.rects.size()) continue;
         // records of other pages: pasted copies (same size), never tiny ones
         if (r.page != pageId && (!otherPages || r.n < 3)) continue;
+        const qsizetype before = po.found.size();
         findRec(r, i, po.rects, idx, &po.found, nullptr, scaleAllowed(r, pageId));
+        if (po.found.size() == before && r.n >= 10 && r.page == pageId) {
+            // diagnostic (developer, #3: a two-line object split by lines after a pushed move): a record found only
+            // in part, with the strokes that are off; logged once per state
+            Placement part;
+            QList<Placement> none;
+            findRec(r, i, po.rects, idx, &none, &part, scaleAllowed(r, pageId));
+            static QSet<QString> seen;
+            const QString key = QStringLiteral("%1/%2/%3,%4").arg(r.id).arg(part.matched)
+                                    .arg(qRound(part.d.x())).arg(qRound(part.d.y()));
+            if (part.matched * 2 >= r.n && !seen.contains(key)) {
+                seen.insert(key);
+                TLOG("objects: record \"%s\" found in part: %d of %d, k %.4f, at %.1f,%.1f", qPrintable(r.text.left(30)),
+                     part.matched, r.n, part.k, part.d.x(), part.d.y());
+                int shown = 0;
+                for (int m = 0; m < part.members.size() && shown < 6; ++m) {
+                    if (part.members[m] >= 0) continue;
+                    const QRect &rr = r.rects[m];
+                    const QPointF e = part.d + centre(rr) * part.k;
+                    double best = 1e9; QRect near;
+                    for (const QRect &o : po.rects) {
+                        const double dd = std::hypot(centre(o).x() - e.x(), centre(o).y() - e.y());
+                        if (dd < best) { best = dd; near = o; }
+                    }
+                    TLOG("objects:   stroke %d %dx%d expected at %.1f,%.1f; nearest %d,%d %dx%d (%.1f away)", m,
+                         rr.width(), rr.height(), e.x(), e.y(), near.x(), near.y(), near.width(), near.height(), best);
+                    ++shown;
+                }
+            }
+        }
     }
     // placements sharing strokes: a record matching part of a bigger object ("ab" inside "abc"), or two records of
     // the same strokes (an object edited back to an older text): the bigger one wins, then the newest record.
