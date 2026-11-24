@@ -11,8 +11,7 @@
 //   - A text object that was partly erased becomes plain strokes.
 //   - A C API for other add-ons (rmpp-hwr draws recognized handwriting as a text object): see the end of this file.
 //
-// Files: /home/root/.local/share/rmpp-textobj/objects.json (one record per object; read once from rmpp-hwr's
-// ink.json when missing), /home/root/.vellum/share/rmpp-textobj/glyphs.json (Vellum package; else the data dir).
+// Records: carried in each object's own strokes (src/carry.h), no record file. Files: /home/root/.vellum/share/rmpp-textobj/glyphs.json (Vellum package; else the data dir).
 #include <dlfcn.h>
 #include <algorithm>
 #include <cmath>
@@ -57,8 +56,7 @@ namespace {
 
 #define TLOG(...) qWarning("[rmpp-textobj] " __VA_ARGS__)
 
-const char *kDataDir = "/home/root/.local/share/rmpp-textobj";        // objects.json (user data)
-const char *kOldRecords = "/home/root/.local/share/rmpp-hwr/ink.json";  // rmpp-hwr 0.2-0.4 kept the records here
+const char *kDataDir = "/home/root/.local/share/rmpp-textobj";        // textlayer.json (hints), icon
 const char *kPkgDir = "/home/root/.vellum/share/rmpp-textobj";        // Vellum package: glyphs.json
 const char *kConf = "/home/root/.config/rmpp-textobj/settings.conf";
 
@@ -235,6 +233,7 @@ bool uiReady() {
 
 #include "glyphs.h"
 #include "ink.h"
+#include "carry.h"
 #include "objects.h"
 #include "highlight.h"
 #include "edit.h"

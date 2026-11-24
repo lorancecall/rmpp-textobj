@@ -40,7 +40,8 @@ Details: [docs/usage.md](docs/usage.md).
 
 Loaded into xochitl by rmpp-preload, it draws text with the glyphs of [rmpp-lang](https://github.com/lorancecall/rmpp-lang)'s
 language add-ons (this package has ASCII only; text with characters no installed language has is refused, naming
-them). Each object is recorded by its strokes' pattern, so it is found wherever it was moved, scaled or copied.
+them). Each object carries its own record inside its strokes, so it is found wherever it was moved, scaled or
+copied, syncs with the page and can be edited on another tablet with this add-on; without it, it is plain handwriting.
 The code and its tests: [docs/develop.md](docs/develop.md).
 
 ## Build

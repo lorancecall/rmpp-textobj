@@ -10,10 +10,15 @@ Build, tests and trying a build on the Paper Pro: [install.md](install.md#build-
   xochitl start) and released after two idle minutes; one binary search per character. Order: the text's language
   (kana -> ja, Hangul -> ko, Han only -> the language whose file has all of it) -> the other installed languages ->
   `glyphs.json`.
-- `src/objects.h`: one record per object in `/home/root/.local/share/rmpp-textobj/objects.json` (text, size, and the
-  bounds of each of its strokes). An object is found on a page by its strokes' pattern, wherever it was moved and at
-  whatever size; nothing tracks positions. Records written by rmpp-hwr 0.2-0.4 (`~/.local/share/rmpp-hwr/ink.json`)
-  are taken over once; their strokes are learned the first time each such object is selected.
+- `src/carry.h`: each object's record (text, size, weight, line boxes) rides in its own strokes, in the `speed`
+  field of their points, which the Fineliner does not draw and xochitl keeps through moves, scaling, copy and paste
+  and sync. So the record syncs with the page, works on another tablet, follows a copy to another page and goes away
+  with the page; a stock tablet sees plain strokes. No record file is kept, and nothing is ever written next to a
+  notebook (an unknown file in a document folder stops that notebook's sync: the cloud rejects it). Also a small
+  reader for `.rm` v6 page files.
+- `src/objects.h`: records in memory, made here or read from the page file's strokes when a page is looked at. An
+  object is found on a page by its strokes' pattern, wherever it was moved and at whatever size; nothing tracks
+  positions.
 - `src/select.h`: the selection rules (double tap, partial lasso, erased objects) and the highlight check.
 - `src/highlight.h`: highlights: which characters a highlighter stroke covers, the bands, following an edit
   (`tests/highlight_test.py` ports the geometry with unit tests).

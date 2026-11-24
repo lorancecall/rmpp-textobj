@@ -43,7 +43,7 @@ double layoutLine(const QString &text, QList<QList<QPointF>> *out) {
     return x;
 }
 
-QList<InkPt> inkPoints(const QList<QPointF> &xy, quint16 width) {
+QList<InkPt> inkPoints(const QList<QPointF> &xy, quint16 width, const QList<quint16> &speeds = {}) {
     QList<InkPt> out;
     const int n = int(xy.size());
     for (int i = 0; i < n; ++i) {
@@ -54,14 +54,36 @@ QList<InkPt> inkPoints(const QList<QPointF> &xy, quint16 width) {
             a = std::atan2(d.y(), d.x());
         }
         if (a < 0) a += 2 * M_PI;
-        out.append(InkPt{float(xy[i].x()), float(xy[i].y()), 4, width, quint8(a / (2 * M_PI) * 255), 110});
+        out.append(InkPt{float(xy[i].x()), float(xy[i].y()), i < speeds.size() ? speeds[i] : quint16(4), width,
+                         quint8(a / (2 * M_PI) * 255), 110});
     }
     return out;
 }
 
 // Add strokes (page coordinates) with the current pen. Returns the number added, -1 if Line is not as expected.
 // Converted text is drawn like a font: Fineliner (even width), black, thickness from the text size (em, page units).
-int addInkStrokes(QObject *sc, QObject *ph, const QList<QList<QPointF>> &strokes, double em, int weight = 1) {
+// A stroke with at least `want` points: midpoints are added on its longest segments (on the line: nothing changes on
+// the page). A one-point stroke gets a point a twentieth of a unit away.
+QList<QPointF> withPoints(QList<QPointF> s, int want) {
+    if (s.isEmpty()) return s;
+    if (s.size() == 1) s.append(s[0] + QPointF(0.05, 0));
+    while (s.size() < want) {
+        int best = 0;
+        double bl = -1;
+        for (int i = 0; i + 1 < s.size(); ++i) {
+            const QPointF d = s[i + 1] - s[i];
+            const double l = d.x() * d.x() + d.y() * d.y();
+            if (l > bl) { bl = l; best = i; }
+        }
+        if (bl <= 0) s.insert(best + 1, s[best] + QPointF(0.05, 0));
+        else s.insert(best + 1, (s[best] + s[best + 1]) / 2);
+    }
+    return s;
+}
+
+// words: per stroke, the speed words carrying the record (src/carry.h); the stroke gets points enough for them.
+int addInkStrokes(QObject *sc, QObject *ph, const QList<QList<QPointF>> &strokes, double em, int weight = 1,
+                  const QList<QList<quint16>> &words = {}) {
     Q_UNUSED(ph);
     const int add = sc->metaObject()->indexOfMethod("addDrawingLine(Line)");
     const QMetaType type = add >= 0 ? sc->metaObject()->method(add).parameterMetaType(0) : QMetaType();
@@ -71,13 +93,15 @@ int addInkStrokes(QObject *sc, QObject *ph, const QList<QList<QPointF>> &strokes
     const uint argb = 0xff000000u;
     static const double divisor[] = {32.0, 20.0, 13.0};   // thin, medium, thick
     const double thick = qBound(1.5, em / divisor[qBound(0, weight, 2)], 9.0);
-    for (const auto &s : strokes) {
+    for (int si = 0; si < strokes.size(); ++si) {
+        const QList<quint16> sw = si < words.size() ? words[si] : QList<quint16>();
+        const QList<QPointF> s = sw.isEmpty() ? strokes[si] : withPoints(strokes[si], int(sw.size()));
         void *line = type.create();
         auto *b = static_cast<char *>(line);
         *reinterpret_cast<int *>(b + 0x00) = tool;
         *reinterpret_cast<int *>(b + 0x04) = color;
         *reinterpret_cast<uint *>(b + 0x08) = argb;
-        *reinterpret_cast<QList<InkPt> *>(b + 0x10) = inkPoints(s, quint16(std::lround(thick * 6)));
+        *reinterpret_cast<QList<InkPt> *>(b + 0x10) = inkPoints(s, quint16(std::lround(thick * 6)), sw);
         *reinterpret_cast<double *>(b + 0x28) = thick;
         void *argv[] = {nullptr, line};
         sc->qt_metacall(QMetaObject::InvokeMetaMethod, add, argv);
@@ -117,6 +141,7 @@ struct Placed {
     double em = 0;    // em height of the first line
     int weight = 1;   // 0 thin, 1 medium, 2 thick
     QList<LineBox> lines;   // every visual line, blank ones too
+    quint32 carryId = 0;    // the id its strokes carry (src/carry.h); 0: not drawn yet
 };
 
 void appendLine(Placed *out, const QString &text, const QPointF &origin, double h) {

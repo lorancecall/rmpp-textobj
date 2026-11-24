@@ -301,7 +301,23 @@ void recordNew(QPointer<QObject> scp, const QString &page, const QString &text, 
             g_putting = false;
             return;
         }
-        updateRecords(makeRecord(page, text, glyphs, pl.origin, pl.em, pl.weight, QString(), pl.lines, hlJson(found)), removeIds);
+        updateRecords(makeRecord(page, text, glyphs, pl.origin, pl.em, pl.weight, pl.carryId ? carryKey(pl.carryId) : QString(),
+                                 pl.lines, hlJson(found)), removeIds);
+        {   // the rects a page file read will compute (strokeRect) against the ones xochitl reports: calibration
+            const double w = std::lround(qBound(1.5, pl.em / (pl.weight == 0 ? 32.0 : pl.weight == 2 ? 13.0 : 20.0), 9.0) * 6) / 4.0;
+            int same = 0, off = 0;
+            double worst = 0;
+            for (const QList<QPointF> &s : pl.strokes) {
+                const QRect c = strokeRect(s, w);
+                double best = 1e9;
+                for (const QRect &g : glyphs) {
+                    if ((QRectF(g).center() - QRectF(c).center()).manhattanLength() > 3) continue;
+                    best = qMin(best, double(qMax(qAbs(g.width() - c.width()), qAbs(g.height() - c.height()))));
+                }
+                if (best < 1e8) { (best == 0 ? same : off)++; worst = qMax(worst, best); }
+            }
+            TLOG("rect check: %d same, %d off (worst %.0f) of %lld strokes", same, off, worst, (long long)pl.strokes.size());
+        }
         TLOG("recorded: %d strokes, %lld highlight(s)", n, (long long)found.size());
         // the copies are taken from the selection: with others still being taken out of it, they came out one too
         // many and the ink was left as plain strokes (device, a59a3c3e)
@@ -400,10 +416,16 @@ void putInkNow(QPointer<QObject> scp, QPointer<QObject> php, QPointer<QQuickItem
         QSet<QString> before;
         for (const QRect &r : pageLineRects(scp)) before.insert(rectKey(r));
         const int bands = hls.isEmpty() ? 0 : addBands(scp, hls);
-        const int added = addInkStrokes(scp, php, pl.strokes, pl.em, pl.weight);
+        Placed cp = pl;
+        cp.carryId = newCarryId();
+        const QList<QList<quint16>> words = carryWords(cp.carryId, packRecord(text, cp), int(cp.strokes.size()));
+        if (words.isEmpty())
+            TLOG("new ink: %lld strokes cannot carry the record (over 4095): an object until xochitl restarts",
+                 (long long)cp.strokes.size());
+        const int added = addInkStrokes(scp, php, cp.strokes, cp.em, cp.weight, words);
         if (added > 0) {
-            selectInk(scp, inkAndBands(pl, bands > 0 ? hls : QList<Hl>()));
-            recordNew(scp, dvp ? dvp->property("currentPageId").toString() : scp->property("pageId").toString(), text, pl,
+            selectInk(scp, inkAndBands(cp, bands > 0 ? hls : QList<Hl>()));
+            recordNew(scp, dvp ? dvp->property("currentPageId").toString() : scp->property("pageId").toString(), text, cp,
                       added, removeIds, bands > 0 ? hls : QList<Hl>(), 0, before, hand);
         } else {
             g_putting = false;

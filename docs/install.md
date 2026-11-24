@@ -30,8 +30,9 @@ vellum add rmpp-lang-ko        # the languages whose glyphs you need: rmpp-lang-
 
 - **Just this add-on:** untick it in rmpp setup and press **Remove unticked installed**, or
   `vellum del rmpp-textobj`. It stays while `rmpp-hwr` is installed (rmpp-hwr needs it).
-- **What stays:** text objects already on your pages (as ordinary pen strokes), their records in
-  `/home/root/.local/share/rmpp-textobj/objects.json` and the settings in `/home/root/.config/rmpp-textobj/`. Delete
+- **What stays:** text objects already on your pages (as ordinary pen strokes, which still carry their text: install
+  the add-on again and they can be edited again), a small hint file in `/home/root/.local/share/rmpp-textobj/` and
+  the settings in `/home/root/.config/rmpp-textobj/`. Delete
   these by hand to start fresh, or use step 3 of
   [uninstall.md](https://github.com/lorancecall/rmpp-packages/blob/main/docs/uninstall.md).
 - **Everything rmpp, and before a factory reset:** [uninstall.md](https://github.com/lorancecall/rmpp-packages/blob/main/docs/uninstall.md).
