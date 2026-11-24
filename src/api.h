@@ -2,7 +2,7 @@
 // Another add-on finds these with dlopen("/usr/lib/rmpp/rmpp-textobj/librmpp-textobj-ui.so", RTLD_NOW | RTLD_NOLOAD)
 // + dlsym (rmpp-textobj is loaded first: preload.d/55-rmpp-textobj.so). All of them run on xochitl's main (GUI)
 // thread and work on the open page and its current lasso selection. Text is UTF-8. rmpp-textobj owns the text object
-// records; callers never read or write objects.json.
+// records (carried in the objects' strokes).
 //
 //   int rmpp_textobj_api(void)
 //       API version (1).
@@ -133,20 +133,29 @@ RMPP_TEXTOBJ_API int rmpp_textobj_missing(const char *text, char *missing, int c
 RMPP_TEXTOBJ_API int rmpp_textobj_put_lines(const char *lines, double left, double top, double right, double bottom,
                                             int replace, const char *lang) {
     const OpenPage p = openPage();
-    if (!p.sc || !p.ph) return -2;
+    if (!p.sc || !p.ph) { TLOG("put lines: no open page"); return -2; }
+    {   // handwriting is converted on the writing layer only: on the Text objects layer a lasso holds text objects
+        // (or strokes that lost their record), and converting those again led to a frozen xochitl (device 064e18a3)
+        const int t = textLayer(p.sc);
+        if (replace != 0 && t >= 0 && p.sc->property("currentLayer").toInt() == t) {
+            TLOG("put lines: on the text layer: not converted");
+            showHint(p.dv, QStringLiteral("Text objects are already text: double tap one to edit it."));
+            return 0;
+        }
+    }
     g_langHint = QString::fromUtf8(lang ? lang : "");
     const QStringList ls = QString::fromUtf8(lines ? lines : "").split(QLatin1Char('\n'), Qt::SkipEmptyParts);
     QStringList texts;
     for (const QString &l : ls)
         if (!blankText(l.section(QLatin1Char('\t'), 1))) texts << l.section(QLatin1Char('\t'), 1);
-    if (texts.isEmpty()) return 0;   // nothing but blanks: no object
+    if (texts.isEmpty()) { TLOG("put lines: only blanks"); return 0; }   // nothing but blanks: no object
     const QString missing = missingGlyphs(texts.join(QLatin1Char(' ')));
     if (!missing.isEmpty()) {
         showHint(p.dv, QStringLiteral("No glyphs for: %1. Add the language in Settings > Languages.").arg(missing));
         return -1;
     }
     Placed pl = placeLines(ls, QRectF(QPointF(left, top), QPointF(right, bottom)), replace != 0);
-    if (pl.strokes.isEmpty()) return 0;
+    if (pl.strokes.isEmpty()) { TLOG("put lines: no glyphs for the text"); return 0; }
     TLOG("text object from %lld recognized line(s)", (long long)ls.size());
     putInk(p.sc, p.ph, p.dv, p.sc->property("currentLayer").toInt(), replace != 0, pl, texts.join(QLatin1Char('\n')), {});
     return 1;

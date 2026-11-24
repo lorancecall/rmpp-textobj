@@ -11,8 +11,7 @@
 //   - A text object that was partly erased becomes plain strokes.
 //   - A C API for other add-ons (rmpp-hwr draws recognized handwriting as a text object): see the end of this file.
 //
-// Files: /home/root/.local/share/rmpp-textobj/objects.json (one record per object; read once from rmpp-hwr's
-// ink.json when missing), /home/root/.vellum/share/rmpp-textobj/glyphs.json (Vellum package; else the data dir).
+// Records: carried in each object's own strokes (src/carry.h), no record file. Files: /home/root/.vellum/share/rmpp-textobj/glyphs.json (Vellum package; else the data dir).
 #include <dlfcn.h>
 #include <algorithm>
 #include <cmath>
@@ -28,6 +27,7 @@
 #include <QtCore/QDir>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
+#include <QtCore/QDirIterator>
 #include <QtCore/QFileInfo>
 #include <QtCore/QHash>
 #include <QtCore/QJsonArray>
@@ -56,8 +56,7 @@ namespace {
 
 #define TLOG(...) qWarning("[rmpp-textobj] " __VA_ARGS__)
 
-const char *kDataDir = "/home/root/.local/share/rmpp-textobj";        // objects.json (user data)
-const char *kOldRecords = "/home/root/.local/share/rmpp-hwr/ink.json";  // rmpp-hwr 0.2-0.4 kept the records here
+const char *kDataDir = "/home/root/.local/share/rmpp-textobj";        // textlayer.json (hints), icon
 const char *kPkgDir = "/home/root/.vellum/share/rmpp-textobj";        // Vellum package: glyphs.json
 const char *kConf = "/home/root/.config/rmpp-textobj/settings.conf";
 
@@ -70,10 +69,9 @@ void loadSettings() {
     if (g_confLoaded || !QFileInfo::exists(QStringLiteral("/home/root/.local"))) return;   // /home mounts late
     g_confLoaded = true;
     QSettings s(QLatin1String(kConf), QSettings::IniFormat);
-    // highlighter strokes on text objects are replaced by bands snapped to the characters (src/highlight.h).
-    // Off by default: selecting the highlighter stroke alone over the glyphs fails on the device (OS 3.29.1);
-    // the highlight is still recorded and drawn as bands after an edit. v0.2: issue #3 (own layer).
-    g_state->insert(QStringLiteral("snapHighlights"), s.value(QStringLiteral("snapHighlights"), false).toBool());
+    Q_UNUSED(s);
+    // (snapping highlights to the characters follows xochitl's "Snap to text" switch now: snapToTextOn, highlight.h;
+    // the old snapHighlights setting is no longer read)
 }
 
 void saveSetting(const QString &key, const QVariant &v) {
@@ -234,11 +232,13 @@ bool uiReady() {
 
 #include "glyphs.h"
 #include "ink.h"
+#include "carry.h"
 #include "objects.h"
 #include "highlight.h"
 #include "edit.h"
 #include "addtext.h"
 #include "select.h"
+#include "layer.h"
 
 } // namespace
 
@@ -264,6 +264,8 @@ void textobjInit() {
             placeTextObject(cmd.section(QLatin1Char(':'), 1, 1).toDouble(), cmd.section(QLatin1Char(':'), 2, 2).toDouble());
         else if (cmd == QLatin1String("inkok")) finishInkEdit(true);
         else if (cmd == QLatin1String("inkcancel")) finishInkEdit(false);
+        else if (cmd.startsWith(QLatin1String("stap:")))
+            singleTapAt(cmd.section(QLatin1Char(':'), 1, 1).toDouble(), cmd.section(QLatin1Char(':'), 2, 2).toDouble());
         else if (cmd.startsWith(QLatin1String("dtap:")))
             doubleTapAt(cmd.section(QLatin1Char(':'), 1, 1).toDouble(), cmd.section(QLatin1Char(':'), 2, 2).toDouble());
     });
@@ -275,7 +277,10 @@ void textobjInit() {
         watchSelection();
         watchDoubleTap();
         watchUndoRedo();
+        watchLayers();
+        watchLayersMenu();
         installTapOverlay();
+        installBoxOverlay();
         closeStaleInkEdit();
         closeStaleAddPlace();
         checkErasedObjects();

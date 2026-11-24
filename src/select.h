@@ -72,8 +72,29 @@ void setSelection(QPointer<QObject> scp, const QList<QRect> &rects, const QList<
         }
         subtractRects(scp, sub, 0, [finish, out, kept] { finish(out, kept); });
     };
-    QTimer::singleShot(350, scp, [scp, wr, strokePass] {
+    // the rect took exactly the wanted strokes (a band alone in its place): done as soon as that is seen (the fixed
+    // waits below made a band follow its object ~1.4 s later, developer 2026-11-24)
+    auto taken = std::make_shared<bool>(false);   // one of the two ways goes on, never both
+    auto exact = std::make_shared<std::function<void(int)>>();
+    *exact = [scp, wantKeys, done, exact, taken](int tries) {
         if (!scp) { g_adjusting = false; return; }
+        if (*taken) return;
+        QSet<QString> got;
+        for (const QRect &r : scp->property("selectionItemCount").toInt() > 0 ? lineRects(scp) : QList<QRect>{}) got.insert(rectKey(r));
+        if (got == wantKeys) {
+            *taken = true;
+            TLOG("selection set: %lld strokes at once", (long long)got.size());
+            if (done) done();
+            QTimer::singleShot(200, qApp, [] { g_adjusting = false; });
+            return;
+        }
+        if (tries < 5) QTimer::singleShot(50, scp, [exact, tries] { (*exact)(tries + 1); });
+    };
+    QTimer::singleShot(50, scp, [exact] { (*exact)(0); });
+    QTimer::singleShot(350, scp, [scp, wr, strokePass, taken] {
+        if (!scp) { g_adjusting = false; return; }
+        if (*taken) return;   // done above
+        *taken = true;
         if (wr.size() != 1) { strokePass(); return; }
         const QRect w = wr.first();
         const QList<QRect> strips = {w.adjusted(-1, 2, 1, 1), w.adjusted(-1, -1, 1, -2), w.adjusted(2, -1, 1, 1),
@@ -290,8 +311,8 @@ QList<Placement> selectedObjects(const PageObjects &po, const QList<QRect> &sel,
 }
 
 // A double tap on the selection (xochitl's selection handler): edit the selected object(s).
-void editSelectedObjects() {
-    if (g_lastDoubleTap.isValid() && g_lastDoubleTap.elapsed() < 600) return;   // the tap overlay saw it too
+void editSelectedObjects(bool now = false) {
+    if (!now && g_lastDoubleTap.isValid() && g_lastDoubleTap.elapsed() < 600) return;   // the tap overlay saw it too
     g_lastDoubleTap.start();
     if (g_edit.box || putting()) return;
     QQuickItem *dv = documentView();
@@ -326,14 +347,15 @@ void watchDoubleTap() {
 }
 
 // Double taps anywhere on the page, seen without taking them from xochitl: a TapHandler only watches (passive grab),
-// and only while the selection tool is active. Finger only.
+// with any tool. Finger only.
 const char *kTapQml = R"QML(
 import QtQuick
 Item {
     id: tapArea
     property bool active: false
     anchors.fill: parent
-    z: 5
+    // above the pen tool's own input (with the pen tool it saw no taps at z 5); it only watches (passive grab)
+    z: 9000
     // finger only: with the pen it kept the selection tool's own pen input (menu taps, moving the selection) from
     // xochitl, seen on the device (OS 3.29). Pen double taps on a selection still reach xochitl's handler.
     TapHandler {
@@ -341,7 +363,24 @@ Item {
         acceptedDevices: PointerDevice.TouchScreen
         gesturePolicy: TapHandler.DragThreshold
         grabPermissions: PointerHandler.ApprovesTakeOverByAnything
-        onDoubleTapped: (eventPoint, button) => tobj.command = "dtap:" + eventPoint.position.x + ":" + eventPoint.position.y + "#" + Date.now()
+        // two taps within 450 ms and 60 px, counted here: the TapHandler's own double tap missed some with the
+        // pen tool (developer, 8798ea08)
+        property real lastX: -1000
+        property real lastY: -1000
+        property double lastT: 0
+        onTapped: (eventPoint, button) => {
+            // a palm (large contact) is not a tap
+            const d = eventPoint.ellipseDiameters
+            if (d && (d.width > 45 || d.height > 45)) { lastT = 0; return }
+            const p = eventPoint.position, now = Date.now()
+            if (now - lastT < 450 && Math.abs(p.x - lastX) < 60 && Math.abs(p.y - lastY) < 60) {
+                lastT = 0
+                tobj.command = "dtap:" + p.x + ":" + p.y + "#" + now
+            } else {
+                lastT = now; lastX = p.x; lastY = p.y
+                tobj.command = "stap:" + p.x + ":" + p.y + "#" + now   // a single tap (object mode only)
+            }
+        }
     }
 }
 )QML";
@@ -355,7 +394,7 @@ void installTapOverlay() {
         g_tapOverlay = createWithState(dv, kTapQml, "TapArea");
     }
     if (g_tapOverlay) {
-        const bool on = selectionToolActive() && !g_edit.box;
+        const bool on = !g_edit.box;   // any tool (developer, #3): a finger double tap edits the object there
         if (g_tapOverlay->property("active").toBool() != on) g_tapOverlay->setProperty("active", on);
     }
 }
@@ -363,14 +402,56 @@ void installTapOverlay() {
 // A point in DocumentView coordinates -> page coordinates (addtext.h viewToPage).
 bool viewToPage(QQuickItem *dv, const QPointF &p, QPointF *out);
 
-// Double tap at x, y (DocumentView coordinates) with the selection tool: select the text object there; if it is
-// selected already, edit it.
-void doubleTapAt(double x, double y) {
-    if (g_edit.box || putting() || adjusting() || !selectionToolActive()) return;
+// Double tap at x, y (DocumentView coordinates): select the text object there and edit it. Not found on the current
+// layer but on one of the Text objects layer's known boxes (layer.h): that layer is made current (one undo group with
+// the step before it), and the object is selected and edited there (onText). Where two or more objects overlap: a
+// short message, nothing else.
+int textObjectsAt(const QString &page, const QPointF &at, QRectF *box);   // layer.h
+int textLayer(QObject *sc);                                              // layer.h
+void switchLayer(QObject *sc, int to);                                   // layer.h
+void waitFor(QPointer<QObject> scp, std::function<bool()> cond, std::function<void(bool)> next, int tries = 0);   // layer.h
+
+void backToWriting(QObject *sc, const char *why);   // layer.h
+void toolChanged();                                 // layer.h
+void requestBoxes();                                // layer.h
+
+// Our own tap sequence (a double or single tap: tool, layer, selection, edit box) is under way: a tool change seen
+// meanwhile is ours, not the user's (the tool flickered off while a double tap turned it on, device c67d0d58). The
+// sequence ends by its own steps (TapSeqEnd when it returns with nothing pending, endTapSeq in its last callback);
+// the tool is then looked at once. The 5 s cap is only a fail-safe against a sequence that never ended.
+bool g_tapSeq = false, g_tapSeqAsync = false;
+QElapsedTimer g_tapSeqStarted;
+bool tapSequence() { return g_tapSeq && g_tapSeqStarted.isValid() && g_tapSeqStarted.elapsed() < 5000; }
+void endTapSeq() {
+    if (!g_tapSeq) return;
+    g_tapSeq = false;
+    g_tapSeqAsync = false;
+    QTimer::singleShot(0, qApp, [] { toolChanged(); requestBoxes(); });
+}
+struct TapSeqEnd {
+    ~TapSeqEnd() { if (!g_tapSeqAsync) endTapSeq(); }
+};
+// a continuation of the sequence (a callback): it ends the sequence when it returns, unless it goes on again
+struct TapSeqStep {
+    TapSeqStep() { g_tapSeqAsync = false; }
+    ~TapSeqStep() { if (!g_tapSeqAsync) endTapSeq(); }
+};
+
+// edit false: a single tap on the Text objects layer: the object there selected (no edit box), nothing there: back
+// to the writing layer.
+void doubleTapNow(double x, double y, bool onText = false, bool edit = true) {
+    if (g_edit.box || putting() || adjusting()) {
+        TLOG("double tap: busy (edit box %d, putting %d, adjusting %d)", g_edit.box ? 1 : 0, putting() ? 1 : 0, adjusting() ? 1 : 0);
+        return;
+    }
+    if (!g_tapSeq) g_tapSeqStarted.start();
+    g_tapSeq = true;
+    g_tapSeqAsync = false;
+    TapSeqEnd seqEnd;
     QQuickItem *dv = documentView();
     QObject *sc = dv ? dv->property("sceneController").value<QObject *>() : nullptr;
     QPointF at;
-    if (!sc || !viewToPage(dv, QPointF(x, y), &at)) return;
+    if (!sc || !viewToPage(dv, QPointF(x, y), &at)) { TLOG("double tap: no page point"); return; }
     const QString pageId = dv->property("currentPageId").toString();
     const QList<QRect> sel = lineRects(sc);
     if (!sel.isEmpty()) upgradeLegacy(sc, pageId, sel);
@@ -387,23 +468,129 @@ void doubleTapAt(double x, double y) {
         po = findObjects(sc, pageId, true);
         hit = hitAt();
     }
-    if (!hit) return;
+    // Nothing changes (tool or layer) unless the tap is on a text object: a palm or finger resting while writing
+    // was taken for a double tap, and the tool switched to the selection tool under the pen (developer, 6ad906ef).
+    if (!hit) {
+        const int t = textLayer(sc), cur = sc->property("currentLayer").toInt();
+        if (!edit) { backToWriting(sc, "a tap on no object"); return; }
+        if (onText) { TLOG("double tap: no text object here on the text layer either"); return; }
+        if (t < 0 || t == cur) { TLOG("double tap: not on a text object"); return; }
+        const int n = textObjectsAt(pageId, at, nullptr);
+        if (n == 0) { TLOG("double tap: not on a text object"); return; }
+        if (n > 1) { showHint(dv, QStringLiteral("Text objects overlap here.")); return; }
+        g_lastDoubleTap.start();
+        TLOG("double tap: to the text layer for the object there");
+        useSelectionTool();
+        switchLayer(sc, t);
+        QPointer<QObject> scp(sc);
+        g_tapSeqAsync = true;
+        waitFor(scp, [scp, t] { return scp->property("currentLayer").toInt() == t; }, [x, y](bool ok) {
+            if (!ok) { endTapSeq(); return; }
+            QTimer::singleShot(150, qApp, [x, y] { g_tapSeqAsync = false; doubleTapNow(x, y, true); });
+        });
+        return;
+    }
+    {   // two or more objects right here: which one is meant is not clear (the 12 px margin alone is not an overlap:
+        // two objects side by side both have it at the gap, device 2351692b)
+        // (placements sharing strokes are one object: an undone conversion's record matching the same strokes)
+        QList<QSet<int>> here;
+        for (const Placement &p : po.found) {
+            if (!p.box.contains(at)) continue;
+            QSet<int> ms;
+            for (int m : p.members) if (m >= 0) ms.insert(m);
+            bool same = false;
+            for (const QSet<int> &h : here) if (h.intersects(ms)) same = true;
+            if (!same) here << ms;
+        }
+        if (here.size() > 1) { showHint(dv, QStringLiteral("Text objects overlap here.")); return; }
+    }
+    // typed text under the object: xochitl took the double tap too and selected a word there (keyboard up; the
+    // selection tool could not be turned on then, and the tap was tried again and again: device 2026-11-24). The
+    // object comes first (developer, #3): the text selection and cursor are ended.
+    if (sc->property("hasTextSelection").toBool() || sc->property("isTextCursorVisible").toBool()) {
+        QMetaObject::invokeMethod(sc, "clearSelectedText", Qt::DirectConnection);
+        QMetaObject::invokeMethod(sc, "setCursorVisible", Qt::DirectConnection, Q_ARG(bool, false), Q_ARG(bool, false));
+        if (QGuiApplication::inputMethod()) QGuiApplication::inputMethod()->hide();
+        TLOG("double tap: on a text object over typed text: its text selection ended");
+    }
+    if (!selectionToolActive()) {   // on an object, another tool: the selection tool first (selecting needs it)
+        const bool switched = useSelectionTool();
+        TLOG("double tap: on a text object, the selection tool %s", switched ? "turned on" : "could not be turned on");
+        if (switched) {
+            g_tapSeqAsync = true;
+            QTimer::singleShot(500, qApp, [x, y, onText, edit] { g_tapSeqAsync = false; doubleTapNow(x, y, onText, edit); });
+        }
+        return;
+    }
     if (!sel.isEmpty()) {
         bool only = false;
         const QList<Placement> objs = selectedObjects(po, sel, &only);
         for (const Placement &p : objs)   // selected with nothing but objects and their marks: edit
-            if (p.rec == hit->rec && p.d == hit->d && only) { editSelectedObjects(); return; }
+            // now: the single tap that came first (on the Text objects layer) selected it a moment ago and set the
+            // double tap clock, which would take this double tap for a repeat (device 2026-11-24: no edit box there)
+            if (p.rec == hit->rec && p.d == hit->d && only) { if (edit) editSelectedObjects(true); return; }
     }
     // not selected, or selected with other handwriting: select this object alone
     g_lastDoubleTap.start();
     TLOG("double tap: selecting a text object (%d strokes)", hit->matched);
+    // another object's strokes within this one's box: one rect would take them too. A stroke counts by its centre
+    // (boxes of objects side by side touch or overlap a little: every tap said "overlap", device 2351692b)
+    // Strokes of the object itself do not count, also when another record matches them (the same text converted
+    // again where an undone conversion was: every tap said "overlap", device effa3783).
+    bool crossed = false;
+    const QRectF inner = hit->box.adjusted(2, 2, -2, -2);
+    const QSet<int> own(hit->members.cbegin(), hit->members.cend());
+    for (const Placement &p : po.found) {
+        if (&p == hit) continue;
+        for (int m : p.members)
+            if (m >= 0 && m < po.rects.size() && !own.contains(m) && inner.contains(QRectF(po.rects[m]).center())) {
+                crossed = true;
+                const QRect r = po.rects[m];
+                TLOG("double tap: crossed: record %d's stroke %d,%d %dx%d in record %d's box %.0f,%.0f %.0fx%.0f",
+                     p.rec, r.x(), r.y(), r.width(), r.height(), hit->rec, hit->box.x(), hit->box.y(),
+                     hit->box.width(), hit->box.height());
+                break;
+            }
+        if (crossed) break;
+    }
+    if (onText && !crossed) {   // nothing but objects on the Text objects layer: one rect selects it, then the edit box
+        QPointer<QObject> scp(sc);
+        selectRect(sc, hit->box.toAlignedRect().adjusted(-2, -2, 2, 2), 0);
+        if (edit) {
+            g_tapSeqAsync = true;
+            QTimer::singleShot(250, sc, [scp] {
+                TapSeqStep step;
+                if (scp && scp->property("selectionItemCount").toInt() > 0) editSelectedObjects(true);
+            });
+        }
+        return;
+    }
+    if (crossed && sc->property("currentLayer").toInt() == textLayer(sc)) {
+        // a foreign stroke whose rect encloses one of this object's strokes cannot be taken out without taking that
+        // stroke too: the selection would stay mixed (and a tap on it could drag both objects): say so at once
+        QSet<int> own;
+        for (int m : hit->members) if (m >= 0) own.insert(m);
+        for (int i = 0; i < po.rects.size(); ++i) {
+            if (own.contains(i)) continue;
+            const QRect ra = po.rects[i].adjusted(-1, -1, 1, 1);
+            for (int m : own)
+                if (ra.contains(po.rects[m])) {
+                    showHint(dv, QStringLiteral("Text objects overlap here."));
+                    TLOG("double tap: another object's stroke encloses one of this object's: not selected");
+                    return;
+                }
+        }
+    }
     endSelection(sc, dv);
     QPointer<QObject> scp(sc);
     QPointer<QQuickItem> dvp(dv);
     const QList<QRect> rects = po.rects;
     const QList<int> members = hit->members;
-    QTimer::singleShot(250, sc, [scp, dvp, rects, members, pageId] {
-        setSelection(scp, rects, members, [scp, dvp, pageId] {
+    g_tapSeqAsync = true;
+    QTimer::singleShot(250, sc, [scp, dvp, rects, members, pageId, edit] {
+        if (!scp) { endTapSeq(); return; }
+        setSelection(scp, rects, members, [scp, dvp, pageId, edit] {
+            TapSeqStep step;
             // a stroke drawn across the object encloses some of its strokes and cannot be left out: editing would
             // delete it too, so say so (the edit needs the object alone, or with its marks)
             if (!scp || !dvp) return;
@@ -411,9 +598,58 @@ void doubleTapAt(double x, double y) {
             QList<int> other;
             bool only = false;
             selectedObjects(po2, lineRects(scp), &only, &other);
-            if (!other.isEmpty())
-                showHint(dvp, QStringLiteral("Handwriting over this text object is selected with it. Move it off to edit the text."));
+            if (!other.isEmpty()) {
+                // not exactly this object: the mixed selection is not left behind (moving it mixed two objects'
+                // strokes, device f1b714c2)
+                const bool onT = scp->property("currentLayer").toInt() == textLayer(scp);
+                if (onT) QMetaObject::invokeMethod(scp, "clearSelectedItems");
+                showHint(dvp, onT ? QStringLiteral("Text objects overlap here.")
+                                  : QStringLiteral("Handwriting over this text object is selected with it. Move it off to edit the text."));
+            }
+            else if (edit) editSelectedObjects(true);   // a double tap edits the object right away (developer, #3)
         });
+    });
+}
+
+// A finger double tap from the overlay. The two-finger (undo) and three-finger (redo) tap gestures are seen as a
+// double tap too, and starting a selection then cleared the redo history (device, 0d009cd3): wait a moment, and it
+// is not a double tap if an undo or redo came with it.
+void doubleTapAt(double x, double y) {
+    // taps on the toolbar (its undo and redo buttons, pressed quickly) are not on the page
+    if (x < 130 && findAnywhere([](QQuickItem *i) { return i->objectName() == QLatin1String("undoButton") && i->isVisible(); }))
+        return;
+    TLOG("double tap seen at %.0f, %.0f", x, y);
+    QTimer::singleShot(350, qApp, [x, y] {
+        if (g_anyUserStep.isValid() && g_anyUserStep.elapsed() < 800) { TLOG("double tap: an undo/redo gesture, left alone"); return; }
+        auto go = std::make_shared<std::function<void(int)>>();
+        *go = [x, y, go](int tries) {   // the first tap's selection may still be settling (single tap, below)
+            if (adjusting() && tries < 6) { QTimer::singleShot(300, qApp, [go, tries] { (*go)(tries + 1); }); return; }
+            doubleTapNow(x, y);
+        };
+        (*go)(0);
+    });
+}
+
+// A single finger tap (developer, #3). Object mode only (the Text objects layer current): the object there is
+// selected, a tap on no object goes back to the writing layer. On other layers nothing (a palm or finger while
+// writing). The first finger of an undo/redo gesture also arrives as a tap: left alone when an undo or redo came with
+// it (selecting would make xochitl spend that undo on the selection, probed).
+void singleTapAt(double x, double y) {
+    if (x < 130 && findAnywhere([](QQuickItem *i) { return i->objectName() == QLatin1String("undoButton") && i->isVisible(); }))
+        return;
+    QQuickItem *dv = documentView();
+    QObject *sc = dv ? dv->property("sceneController").value<QObject *>() : nullptr;
+    if (!sc || g_edit.box || putting() || adjusting()) return;
+    const int t = textLayer(sc);
+    if (t < 0 || sc->property("currentLayer").toInt() != t) return;
+    QTimer::singleShot(250, qApp, [x, y] {
+        if (g_anyUserStep.isValid() && g_anyUserStep.elapsed() < 600) return;
+        if (g_lastDoubleTap.isValid() && g_lastDoubleTap.elapsed() < 600) return;
+        QQuickItem *dv2 = documentView();
+        QObject *sc2 = dv2 ? dv2->property("sceneController").value<QObject *>() : nullptr;
+        if (!sc2 || g_edit.box || putting() || adjusting() || sc2->property("currentLayer").toInt() != textLayer(sc2)) return;
+        TLOG("single tap at %.0f, %.0f on the text layer", x, y);
+        doubleTapNow(x, y, true, false);
     });
 }
 
@@ -433,7 +669,7 @@ struct HlCapture {
 // Replaces the freehand highlighter strokes of caps by bands: the selection tool for a moment (to select and delete
 // the strokes), the bands drawn, the tool in use before tapped again, and the bands' rects recorded.
 void snapHighlights(QQuickItem *dv, QObject *sc, const QList<HlCapture> &caps) {
-    if (caps.isEmpty() || !g_state->value(QStringLiteral("snapHighlights")).toBool()) return;
+    if (caps.isEmpty() || !snapToTextOn(dv->property("penHandler").value<QObject *>())) return;
     QQuickItem *prev = activeToolButton();
     if (!prev) { TLOG("highlight recorded; no tool button to come back to: not snapped"); return; }
     TLOG("snapping %lld highlight(s); back to %s after", (long long)caps.size(), qPrintable(prev->objectName()));
@@ -501,10 +737,39 @@ void snapHighlights(QQuickItem *dv, QObject *sc, const QList<HlCapture> &caps) {
     });
 }
 
+// layer.h: a highlighter stroke drawn on the writing layer over objects of the Text objects layer
+bool overTextObjects(const QString &page, const QRect &r);
+void highlightToTextLayer(QQuickItem *dv, QObject *sc, const QString &pageId, const QList<QRect> &strokes, int color,
+                          uint argb);
+
 // After the page's strokes changed (settled): highlights whose strokes are gone are dropped from their records; new
-// highlighter strokes on objects (the highlighter is in use) are recorded and snapped.
+// highlighter strokes on objects (the highlighter is in use) are recorded and snapped. New highlighter strokes on
+// another layer over objects of the Text objects layer become bands there (highlightToTextLayer).
 void checkHighlights(QQuickItem *dv, QObject *sc, const QString &pageId, const QSet<QString> &newKeys) {
     const PageObjects po = findObjects(sc, pageId, true);
+    const int tl = textLayer(sc);
+    if (!newKeys.isEmpty() && tl >= 0 && sc->property("currentLayer").toInt() != tl) {
+        int color = kHighlighterYellow;
+        uint argb = 0;
+        QObject *ph = dv->property("penHandler").value<QObject *>();
+        const bool hl = highlighterInUse(ph, &color, &argb), snap = hl && snapToTextOn(ph);
+        QList<QRect> over;
+        if (snap)
+            for (const QRect &r : po.rects)
+                if (newKeys.contains(rectKey(r)) && overTextObjects(pageId, r)) over << r;
+        QStringList seen;   // diagnosis: the strokes and the object boxes compared
+        if (snap && over.isEmpty()) {
+            for (const QRect &r : po.rects)
+                if (newKeys.contains(rectKey(r))) seen << QStringLiteral("stroke %1,%2 %3x%4").arg(r.x()).arg(r.y())
+                    .arg(r.width()).arg(r.height());
+            for (const QRectF &b : textBoxesOf(pageId))
+                seen << QStringLiteral("box %1,%2 %3x%4").arg(b.x()).arg(b.y()).arg(b.width()).arg(b.height());
+        }
+        TLOG("highlight check: %lld new stroke(s) on layer %d, highlighter %d, snap to text %d, %lld over objects%s%s",
+             (long long)newKeys.size(), sc->property("currentLayer").toInt(), hl ? 1 : 0, snap ? 1 : 0, (long long)over.size(),
+             seen.isEmpty() ? "" : ": ", qPrintable(seen.join(QStringLiteral(", "))));
+        if (!over.isEmpty()) { highlightToTextLayer(dv, sc, pageId, over, color, argb); return; }
+    }
     if (po.found.isEmpty()) return;
     // gone: none of a highlight's strokes on any copy of the object
     QHash<int, QSet<int>> shown;   // record index -> highlights seen
@@ -589,19 +854,24 @@ bool pageSettled(QObject *sc, const QString &pageId) {
 }
 
 void checkErasedObjects() {
-    if (g_edit.box || putting() || adjusting()) return;
+    if (g_edit.box || putting() || adjusting() || tapSequence()) return;
     QQuickItem *dv = documentView();
     QObject *sc = dv ? dv->property("sceneController").value<QObject *>() : nullptr;
     if (!sc || !dv->isVisible()) return;
     const QString pageId = dv->property("currentPageId").toString();
     if (pageId.isEmpty() || !pageSettled(sc, pageId)) return;
+    // an eraser never works with a selection; positions reported while an edit is pending cannot be trusted
+    if (sc->property("selectionItemCount").toInt() > 0 || !sc->property("pendingEdit").value<QTransform>().isIdentity())
+        return;
     if (pageId != g_check.page) { g_check = PageCheck{}; g_check.page = pageId; }
     const QList<QRect> rects = pageLineRects(sc);
     QSet<QString> keys;
     for (const QRect &r : rects) keys.insert(rectKey(r));
     const bool settled = keys == g_check.seen;
     g_check.seen = keys;
-    if (!settled || (g_check.once && keys == g_check.checked) || rects.isEmpty()) return;
+    // an empty layer is a state too: the first stroke drawn on an empty writing layer is new (it was never seen before
+    // the page had been checked once), and erasing the last band leaves the layer empty
+    if (!settled || (g_check.once && keys == g_check.checked)) return;
     QSet<QString> added;
     if (g_check.once) for (const QString &k : keys) if (!g_check.checked.contains(k)) added.insert(k);
     g_check.checked = keys;
@@ -630,8 +900,13 @@ void checkErasedObjects() {
         if (own >= qMax(2, (r.n + 1) / 2) && partials[j].matched < r.n) drop << r.id;
     }
     if (!drop.isEmpty()) {
-        updateRecords({}, drop);
-        TLOG("%lld text object(s) erased in part: plain strokes now", (long long)drop.size());
+        // The record is kept (review of f028522): only full matches make an object, so a part left over is plain
+        // strokes anyway, and a false firing (a mixed selection on overlapped objects, positions reported while an
+        // edit was pending) cost the record for good ("Test" could no longer be edited). Erase then undo also keeps
+        // its object now.
+        TLOG("%lld text object(s) found in part (records kept; %d selected, edit pending %d, layer %d)",
+             (long long)drop.size(), sc->property("selectionItemCount").toInt(),
+             sc->property("pendingEdit").value<QTransform>().isIdentity() ? 0 : 1, sc->property("currentLayer").toInt());
     }
     checkHighlights(dv, sc, pageId, added);
 }

@@ -1,58 +1,35 @@
-// ---- text object records (objects.json) and finding the objects on a page ----
+// ---- text object records and finding the objects on a page ----
 // One record per object: {"id", "page", "text", "n" (strokes), "em", "weight", "w", "h" (bounds), "ox", "oy" (em
 // origin of the first line relative to the bounds' top-left), "rects": [x, y, w, h, ...] (bounds of each stroke
 // relative to the bounds' top-left, as xochitl reports them), "lines": [[text, x, y, em], ...] (each drawn line's em
 // box, relative to the bounds' top-left), "hl": highlights (src/highlight.h)}. The bounds are the union of the stroke
 // rects. Records without "lines" (earlier builds) have their text's lines 1.15 em apart from (ox, oy).
 //
+// Records are kept in memory only: made here (a conversion, an edit) or read from the strokes of a page file when
+// the page is looked at (src/carry.h: each object carries its record in its strokes). There is no record file.
+//
 // An object is found on a page by its stroke rects: wherever it was moved (and whatever size it was scaled to), its
 // strokes keep their pattern, so the page's stroke rects (SceneController::getLineBoundingRectsToBeSelected) are
 // searched for it. No position is stored; copies of an object are found as well (each is the same text object).
-// Records from rmpp-hwr 0.2-0.4 have no "rects" ("legacy"): they are recognised only when a selection holds exactly
-// their strokes (same count and aspect), and get their rects at that moment.
-
-QString recordsPath() { return QLatin1String(kDataDir) + QStringLiteral("/objects.json"); }
+// Records without "rects" ("legacy", rmpp-hwr 0.2-0.4) are no longer read from anywhere; the code that gave them
+// their rects stays for records made by an older add-on through the API.
 
 QString newRecordId() {
     static int n = 0;
     return QString::number(QDateTime::currentMSecsSinceEpoch(), 36) + QLatin1Char('-') + QString::number(++n);
 }
 
-void writeRecords(const QJsonArray &a) {
-    QDir().mkpath(QLatin1String(kDataDir));
-    QFile f(recordsPath() + QStringLiteral(".new"));
-    if (f.open(QIODevice::WriteOnly) && f.write(QJsonDocument(a).toJson(QJsonDocument::Compact)) > 0 && f.flush()) {
-        f.close();
-        ::rename(qPrintable(f.fileName()), qPrintable(recordsPath()));
-    }
-}
+// Every record known in this session (made here or read from page files), oldest first.
+QJsonArray g_records;
+
+void writeRecords(const QJsonArray &a) { g_records = a; }
 
 // A record that is no object: blank text (nothing to draw: there are no strokes for it) or no strokes.
 bool emptyRecord(const QJsonObject &o) {
     return blankText(o.value(QStringLiteral("text")).toString()) || o.value(QStringLiteral("n")).toInt() <= 0;
 }
 
-// The records; the first time, rmpp-hwr's ink.json is taken over (each record gets an id; the old file stays).
-// Empty records (left by earlier builds, if any) are dropped on the way.
-QJsonArray readRecords() {
-    QFile f(recordsPath());
-    const bool own = f.open(QIODevice::ReadOnly);
-    QFile old{QLatin1String(kOldRecords)};
-    if (!own && !old.open(QIODevice::ReadOnly)) return {};
-    const QJsonArray a = QJsonDocument::fromJson(own ? f.readAll() : old.readAll()).array();
-    QJsonArray out;
-    int empty = 0;
-    for (const QJsonValue &v : a) {
-        QJsonObject o = v.toObject();
-        if (emptyRecord(o)) { ++empty; continue; }
-        if (!own) o.insert(QStringLiteral("id"), newRecordId());
-        out.append(o);
-    }
-    if (!own || empty > 0) writeRecords(out);
-    if (!own) TLOG("took over %lld records from rmpp-hwr's ink.json", (long long)out.size());
-    if (empty > 0) TLOG("%d empty record(s) dropped", empty);
-    return out;
-}
+QJsonArray readRecords() { return g_records; }
 
 struct Rec {
     QString id, page, text;
@@ -151,14 +128,174 @@ void setRecordHl(const QString &id, const QJsonArray &hl) {
     }
 }
 
-// Adds `add` (if not empty) and removes the records with ids in `remove`; keeps the newest 1000.
+// Adds `add` (if not empty; it replaces a record with its id). `remove` is not acted on: an object is found by its
+// strokes, so a record whose strokes are gone finds nothing, and one whose strokes come back (an undo) works again.
 void updateRecords(const QJsonObject &add, const QStringList &remove) {
-    QJsonArray recs = readRecords(), out;
-    for (const QJsonValue &v : recs)
-        if (!remove.contains(v.toObject().value(QStringLiteral("id")).toString())) out.append(v);
-    if (!add.isEmpty()) out.append(add);
-    while (out.size() > 1000) out.removeAt(0);
-    writeRecords(out);
+    Q_UNUSED(remove);
+    if (add.isEmpty()) return;
+    const QString id = add.value(QStringLiteral("id")).toString(), page = add.value(QStringLiteral("page")).toString();
+    QJsonArray out;
+    for (const QJsonValue &v : g_records) {
+        const QJsonObject o = v.toObject();
+        if (o.value(QStringLiteral("id")).toString() != id || o.value(QStringLiteral("page")).toString() != page) out.append(v);
+    }
+    out.append(add);
+    g_records = out;
+}
+
+// The rect xochitl reports for a stroke: its points grown by 1.5 times the pen width (the point width / 4), each edge
+// rounded (device, OS 3.29.1: Fineliner at width 2.25, a glyph stroke 92.81,238.04 13.75x20.92 -> 89,235 21x27, a dot
+// -> 7x7; within a unit for every stroke checked).
+QRect strokeRect(const QList<QPointF> &pts, double widthPx) {
+    const QRectF f = pointsFrame({pts});
+    const double h = 1.5 * widthPx;
+    const int l = qRound(f.left() - h), t = qRound(f.top() - h), r = qRound(f.right() + h), b = qRound(f.bottom() + h);
+    return QRect(l, t, r - l, b - t);
+}
+
+// The objects whose records ride in a page file's strokes, as records of this page. One record per object: its
+// copies (same id) are found by their strokes like the original.
+QList<QJsonObject> recordsFromStrokes(const QString &page, const QList<FileStroke> &all) {
+    struct Part { int idx; const FileStroke *s; QPointF c; };
+    QHash<quint32, QList<Part>> by;
+    for (const FileStroke &s : all) {
+        if (s.pts.size() < 2 || (s.pts[0].speed & 0xf000) != kCarryTag) continue;
+        QRectF f;
+        for (int i = 0; i < s.pts.size(); ++i) {
+            const QPointF p(s.pts[i].x, s.pts[i].y);
+            f = i ? f.united(QRectF(p, QSizeF(0, 0))) : QRectF(p, QSizeF(0, 0));
+        }
+        by[s.pts.last().speed].append(Part{s.pts[0].speed & 0x0fff, &s, f.center()});
+    }
+    QList<QJsonObject> out;
+    int partial = 0, bad = 0, turned = 0;
+    for (auto it = by.cbegin(); it != by.cend(); ++it) {
+        const QList<Part> &parts = it.value();
+        int maxIdx = 0;
+        for (const Part &p : parts) maxIdx = qMax(maxIdx, p.idx);
+        bool done = false, complete = false, read = false;
+        Carried c;
+        for (const Part &anchor : parts) {   // each copy's first stroke: the strokes nearest to it make that copy
+            if (done || anchor.idx != 0) continue;
+            QList<const Part *> pick(maxIdx + 1, nullptr);
+            for (const Part &p : parts) {
+                const Part *&q = pick[p.idx];
+                const QPointF d = p.c - anchor.c, e = q ? q->c - anchor.c : QPointF();
+                if (!q || d.x() * d.x() + d.y() * d.y() < e.x() * e.x() + e.y() * e.y()) q = &p;
+            }
+            pick[0] = &anchor;
+            const auto &a0 = anchor.s->pts;
+            const int count = a0.size() > 2 ? a0[1].speed : 0;
+            if (count <= 0 || count > pick.size()) continue;
+            pick.resize(count);
+            if (pick.contains(nullptr)) continue;
+            complete = true;
+            QList<QList<QPointF>> strokes;
+            QList<QRect> rects;
+            QList<quint16> stream;
+            for (const Part *p : pick) {
+                const auto &ps = p->s->pts;
+                for (int k = 1; k + 1 < ps.size(); ++k) stream << ps[k].speed;
+                QList<QPointF> pts;
+                double w = 0;
+                for (const InkPt &q : ps) { pts << QPointF(q.x, q.y); w = qMax(w, q.width / 4.0); }
+                strokes << pts;
+                rects << strokeRect(pts, w);
+            }
+            if (!read) {   // every copy carries the same words
+                QByteArray bytes;
+                const int len = stream.size() > 1 ? stream[1] : -1;
+                for (int i = 2; i < stream.size() && bytes.size() < len; ++i) {
+                    bytes.append(char(stream[i] & 0xff));
+                    if (bytes.size() < len) bytes.append(char(stream[i] >> 8));
+                }
+                if (len < 0 || bytes.size() != len || !unpackRecord(bytes, &c)) break;
+                read = true;
+            }
+            const QRectF f = pointsFrame(strokes);
+            // the same shape as drawn (a mix of two copies, or a rotated copy, is not)
+            if (c.fw > 1 && c.fh > 1 && f.height() > 0
+                && qAbs((f.width() / f.height()) / (c.fw / c.fh) - 1) > 0.05) { ++turned; continue; }
+            const double k = c.fw > 1 ? f.width() / c.fw : (c.fh > 1 ? f.height() / c.fh : 1.0);
+            QList<LineBox> lines;
+            for (const LineBox &l : c.lines) lines << LineBox{l.t, f.topLeft() + l.o * k, l.em * k};
+            out << makeRecord(page, c.text, rects, f.topLeft() + QPointF(c.ox, c.oy) * k, c.em * k, c.weight,
+                              carryKey(it.key()), lines);
+            done = true;
+        }
+        if (!complete) ++partial;
+        else if (!read) ++bad;
+    }
+    if (turned) TLOG("page file: %d copy(ies) not in their drawn shape (rotated?): not read", turned);
+    if (partial || bad) TLOG("page file: %d object(s) with strokes missing, %d unreadable: plain strokes", partial, bad);
+    return out;
+}
+
+// The page's .rm file (xochitl/<notebook>/<page>.rm), or empty for a page not saved yet.
+QString pageFilePath(const QString &page) {
+    static QHash<QString, QString> cache;
+    static QHash<QString, qint64> missed;   // not found: looked for again after 5 s
+    const auto it = cache.constFind(page);
+    if (it != cache.constEnd() && QFileInfo::exists(*it)) return *it;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (now - missed.value(page, -100000) < 5000) return {};
+    const QString root = QStringLiteral("/home/root/.local/share/remarkable/xochitl");
+    for (const QString &d : QDir(root).entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        const QString p = root + QLatin1Char('/') + d + QLatin1Char('/') + page + QStringLiteral(".rm");
+        if (QFileInfo::exists(p)) { cache.insert(page, p); missed.remove(page); return p; }
+    }
+    missed.insert(page, now);
+    return {};
+}
+
+// The page file's highlighter strokes, by page: their centre, bounds (points) and colour.
+struct FileHl { QRectF box; int color = 0; uint argb = 0; };
+QHash<QString, QList<FileHl>> g_fileHls;
+
+// The colour of the highlighter stroke the page file has where xochitl reports the rect r (matched by centre: the
+// file is as last saved). False when there is none (drawn since, or not saved yet).
+bool fileHighlightColor(const QString &page, const QRectF &r, int *color, uint *argb) {
+    double best = 1e9;
+    for (const FileHl &h : g_fileHls.value(page)) {
+        const double d = (h.box.center() - r.center()).manhattanLength();
+        if (d < best && d <= qMax(4.0, 0.05 * r.width())) { best = d; *color = h.color; *argb = h.argb; }
+    }
+    return best < 1e9;
+}
+
+// Reads the records carried by the page file's strokes when the file changed since the last read. Records made in
+// this session stay as they are (theirs are the rects xochitl reported).
+void loadPageRecords(const QString &page) {
+    static QHash<QString, qint64> seen;
+    if (page.isEmpty()) return;
+    const QString path = pageFilePath(page);
+    if (path.isEmpty()) return;
+    const qint64 m = QFileInfo(path).lastModified().toMSecsSinceEpoch();
+    if (seen.value(page, -1) == m) return;
+    QElapsedTimer t;
+    t.start();
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) return;
+    QList<FileStroke> strokes, hls;
+    if (!readPageStrokes(f.readAll(), &strokes, &hls)) { TLOG("page file: not a v6 page"); return; }
+    seen.insert(page, m);
+    QList<FileHl> fh;
+    for (const FileStroke &h : hls) {
+        QList<QPointF> pts;
+        for (const InkPt &q : h.pts) pts << QPointF(q.x, q.y);
+        fh << FileHl{pointsFrame({pts}), h.color, h.argb};
+    }
+    g_fileHls.insert(page, fh);
+    // a record per object and page: a copy on another page has the same id, and each page needs its own (only a
+    // page's own records are found at another size)
+    auto key = [](const QJsonObject &o) {
+        return o.value(QStringLiteral("id")).toString() + QLatin1Char('@') + o.value(QStringLiteral("page")).toString(); };
+    QSet<QString> have;
+    for (const QJsonValue &v : g_records) have.insert(key(v.toObject()));
+    int added = 0;
+    for (const QJsonObject &o : recordsFromStrokes(page, strokes))
+        if (!have.contains(key(o))) { g_records.append(o); ++added; }
+    TLOG("page file: %lld stroke(s), %d object record(s) read, %lld ms", (long long)strokes.size(), added, (long long)t.elapsed());
 }
 
 // ---- finding objects among stroke rects ----
@@ -353,10 +490,15 @@ struct PageObjects {
     QList<Placement> found;     // full matches
 };
 
+// A pushed move just happened (layer.h): records found only in part are logged for a few seconds (a diagnostic; a
+// full partial search for every record on every read slowed the page reads down).
+QElapsedTimer g_partDiag;
+
 PageObjects findObjects(QObject *sc, const QString &pageId, bool otherPages) {
     PageObjects po;
     po.rects = pageLineRects(sc);
     if (po.rects.isEmpty()) return po;
+    loadPageRecords(pageId);
     po.recs = readRecs();
     const RectIndex idx(po.rects);
     for (int i = 0; i < po.recs.size(); ++i) {
@@ -364,7 +506,37 @@ PageObjects findObjects(QObject *sc, const QString &pageId, bool otherPages) {
         if (r.rects.isEmpty() || r.n > po.rects.size()) continue;
         // records of other pages: pasted copies (same size), never tiny ones
         if (r.page != pageId && (!otherPages || r.n < 3)) continue;
+        const qsizetype before = po.found.size();
         findRec(r, i, po.rects, idx, &po.found, nullptr, scaleAllowed(r, pageId));
+        if (po.found.size() == before && r.n >= 10 && r.page == pageId && g_partDiag.isValid() && g_partDiag.elapsed() < 5000) {
+            // diagnostic (developer, #3: a two-line object split by lines after a pushed move): a record found only
+            // in part, with the strokes that are off; logged once per state
+            Placement part;
+            QList<Placement> none;
+            findRec(r, i, po.rects, idx, &none, &part, scaleAllowed(r, pageId));
+            static QSet<QString> seen;
+            const QString key = QStringLiteral("%1/%2/%3,%4").arg(r.id).arg(part.matched)
+                                    .arg(qRound(part.d.x())).arg(qRound(part.d.y()));
+            if (part.matched * 2 >= r.n && !seen.contains(key)) {
+                seen.insert(key);
+                TLOG("objects: record \"%s\" found in part: %d of %d, k %.4f, at %.1f,%.1f", qPrintable(r.text.left(30)),
+                     part.matched, r.n, part.k, part.d.x(), part.d.y());
+                int shown = 0;
+                for (int m = 0; m < part.members.size() && shown < 6; ++m) {
+                    if (part.members[m] >= 0) continue;
+                    const QRect &rr = r.rects[m];
+                    const QPointF e = part.d + centre(rr) * part.k;
+                    double best = 1e9; QRect near;
+                    for (const QRect &o : po.rects) {
+                        const double dd = std::hypot(centre(o).x() - e.x(), centre(o).y() - e.y());
+                        if (dd < best) { best = dd; near = o; }
+                    }
+                    TLOG("objects:   stroke %d %dx%d expected at %.1f,%.1f; nearest %d,%d %dx%d (%.1f away)", m,
+                         rr.width(), rr.height(), e.x(), e.y(), near.x(), near.y(), near.width(), near.height(), best);
+                    ++shown;
+                }
+            }
+        }
     }
     // placements sharing strokes: a record matching part of a bigger object ("ab" inside "abc"), or two records of
     // the same strokes (an object edited back to an older text): the bigger one wins, then the newest record.

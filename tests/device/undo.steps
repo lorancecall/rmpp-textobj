@@ -1,0 +1,31 @@
+# One undo press per action (#3): a conversion and an edit each go back and forth in one press.
+open
+object "Undo test" 900 850
+expect-ink 895 830 1060 870
+mark
+undo
+expect-log "undo: \d+ step\(s\) in one press"
+wait 1500
+expect-none 895 830 1060 870
+shot undo-1-undone
+mark
+redo
+expect-log "redo: \d+ step\(s\) in one press"
+wait 1500
+expect-ink 895 830 1060 870
+shot undo-2-redone
+# an edit: one undo brings the old text back (not an empty page)
+tool select
+dtap 960 850
+expect-log "edit: 1 object\(s\)"
+text "2"
+tap 1470 766
+expect-log "edit: Undo test2"
+wait 3000
+tap 1300 1700
+mark
+undo
+expect-log "undo: \d+ step\(s\) in one press"
+wait 1500
+expect-ink 895 830 1060 870
+shot undo-3-edit-undone
