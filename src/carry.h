@@ -12,8 +12,9 @@
 // xochitl drops points that lie exactly on the line between their neighbours (device: midpoints added to two-point
 // strokes were gone, their neighbours kept with their values), so where the glyphs' own inner points are too few,
 // points are added a quarter unit off the segment's line (a pen is two units wide or more: nothing visible).
-// Highlights are not carried: they live in the session's record only (after a restart the bands on an object are
-// taken as marks drawn over it).
+// Highlights are not carried in the text's strokes (they come after it): the session's record keeps them, and after a
+// restart (or on another tablet) the bands on an object are taken up again from where they are, with the colour their
+// own strokes have in the page file (fileHighlightColor).
 // Words: the stroke count, the byte count, then the bytes (little endian pairs):
 //   u8 version (1), u8 weight, f32 em, f32 frame width, f32 frame height, f32 ox, f32 oy,
 //   u16 text bytes + UTF-8, u16 line count, per line: u16 bytes + UTF-8, f32 x, f32 y, f32 em, then u16 CRC-16.
@@ -218,6 +219,8 @@ QList<QList<quint16>> carrySpeeds(quint32 id, const QByteArray &payload, const Q
 // Format notes follow rmscene (MIT) as rmpp-hwr's reader does (src/rm.rs there).
 struct FileStroke {
     int tool = 0;
+    int color = 0;      // Line::Color
+    uint argb = 0;      // 0xAARRGGBB when the file has one, else 0
     double thickness = 0;
     QList<InkPt> pts;
 };
@@ -259,8 +262,9 @@ struct Cur {
 };
 }   // namespace rmf
 
-// The strokes of a page file that carry a record (deleted strokes left out). False if it is not a v6 file.
-bool readPageStrokes(const QByteArray &data, QList<FileStroke> *out) {
+// The strokes of a page file that carry a record, and (highlights non-null) its highlighter strokes; deleted strokes
+// left out. False if it is not a v6 file.
+bool readPageStrokes(const QByteArray &data, QList<FileStroke> *out, QList<FileStroke> *highlights = nullptr) {
     static const char kHead[] = "reMarkable .lines file, version=6";
     if (data.size() < 43 || !data.startsWith(kHead)) return false;
     rmf::Cur c{data.constData(), data.size(), 43};
@@ -283,15 +287,23 @@ bool readPageStrokes(const QByteArray &data, QList<FileStroke> *out) {
         if (!v.sub(5, &pts) || ver < 2) continue;
         FileStroke s;
         s.tool = int(tool);
+        s.color = int(color);
         s.thickness = thick;
-        if (pts.left() < 28 || (quint16(quint8(pts.b[8]) | (quint8(pts.b[9]) << 8)) & 0xf000) != kCarryTag)
+        const bool highlighter = highlights && (tool == 18 || tool == 5);
+        if (highlighter) {   // after the points: timestamp id (6), move id (7, optional), ARGB (8, optional)
+            v.id(6);
+            v.id(7);
+            quint32 argb;
+            if (v.i32(8, &argb)) s.argb = argb;
+        } else if (pts.left() < 28 || (quint16(quint8(pts.b[8]) | (quint8(pts.b[9]) << 8)) & 0xf000) != kCarryTag) {
             continue;   // not one of ours (point 0's speed has no tag)
+        }
         while (pts.left() >= 14) {
             InkPt q;
             pts.raw(&q, 14);
             s.pts.append(q);
         }
-        if (!s.pts.isEmpty()) out->append(s);
+        if (!s.pts.isEmpty()) (highlighter ? highlights : out)->append(s);
     }
     return true;
 }

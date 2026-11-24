@@ -12,8 +12,10 @@
 // - editing the text draws the highlights again on the new text: a highlight follows its characters (text inserted
 //   before it moves it, text changed inside it stays highlighted, its text deleted removes it);
 // - a highlight whose strokes are all erased is dropped from the record.
-// Highlights drawn with builds before this (freehand strokes on an object, not in the record) are taken up when the
-// object is edited; their colour is not known then, so they come back yellow.
+// The record's highlights last for the session (records are carried in the text's strokes, src/carry.h, and a
+// highlight comes after them). Bands or freehand highlighter strokes on an object that the record does not have (after
+// a restart, on another tablet) are taken up when the object is edited, with the colour their stroke has in the page
+// file; yellow only when the file does not have that stroke yet.
 // tests/highlight_test.py is a 1:1 Python port of the geometry with its unit tests; keep them in step.
 //
 // Line for a highlighter stroke (rmpp-format NOTES, verified with highlightWithLine): tool 18 (Highlighterv2),

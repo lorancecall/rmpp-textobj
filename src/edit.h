@@ -756,7 +756,11 @@ void openObjectEdit(QQuickItem *dv, QObject *sc, QObject *ph, const PageObjects 
             Hl h;
             if (isHighlightStroke(po, p, m) && rangeFromRect(r.text, pageLines(r, p), QRectF(po.rects[m]), &h.a, &h.b)) {
                 h.a += base; h.b += base;
-                e.hls.append(h);   // drawn before this build: colour unknown, yellow
+                // not in the record (drawn before a restart, on another tablet, or freehand): the colour its stroke has
+                // in the page file; yellow when the file does not have it
+                if (fileHighlightColor(pageId, QRectF(po.rects[m]), &h.color, &h.argb))
+                    TLOG("edit: a highlight taken up with its colour from the page file (%d)", h.color);
+                e.hls.append(h);
                 used.insert(m);
             }
         }

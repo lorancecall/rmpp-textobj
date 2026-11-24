@@ -248,6 +248,21 @@ QString pageFilePath(const QString &page) {
     return {};
 }
 
+// The page file's highlighter strokes, by page: their centre, bounds (points) and colour.
+struct FileHl { QRectF box; int color = 0; uint argb = 0; };
+QHash<QString, QList<FileHl>> g_fileHls;
+
+// The colour of the highlighter stroke the page file has where xochitl reports the rect r (matched by centre: the
+// file is as last saved). False when there is none (drawn since, or not saved yet).
+bool fileHighlightColor(const QString &page, const QRectF &r, int *color, uint *argb) {
+    double best = 1e9;
+    for (const FileHl &h : g_fileHls.value(page)) {
+        const double d = (h.box.center() - r.center()).manhattanLength();
+        if (d < best && d <= qMax(4.0, 0.05 * r.width())) { best = d; *color = h.color; *argb = h.argb; }
+    }
+    return best < 1e9;
+}
+
 // Reads the records carried by the page file's strokes when the file changed since the last read. Records made in
 // this session stay as they are (theirs are the rects xochitl reported).
 void loadPageRecords(const QString &page) {
@@ -261,9 +276,16 @@ void loadPageRecords(const QString &page) {
     t.start();
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly)) return;
-    QList<FileStroke> strokes;
-    if (!readPageStrokes(f.readAll(), &strokes)) { TLOG("page file: not a v6 page"); return; }
+    QList<FileStroke> strokes, hls;
+    if (!readPageStrokes(f.readAll(), &strokes, &hls)) { TLOG("page file: not a v6 page"); return; }
     seen.insert(page, m);
+    QList<FileHl> fh;
+    for (const FileStroke &h : hls) {
+        QList<QPointF> pts;
+        for (const InkPt &q : h.pts) pts << QPointF(q.x, q.y);
+        fh << FileHl{pointsFrame({pts}), h.color, h.argb};
+    }
+    g_fileHls.insert(page, fh);
     // a record per object and page: a copy on another page has the same id, and each page needs its own (only a
     // page's own records are found at another size)
     auto key = [](const QJsonObject &o) {
