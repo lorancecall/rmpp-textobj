@@ -708,6 +708,7 @@ void snapHighlights(QQuickItem *dv, QObject *sc, const QList<HlCapture> &caps) {
 // layer.h: a highlighter stroke drawn on the writing layer over objects of the Text objects layer
 bool overTextObjects(const QString &page, const QRect &r);
 void dropErasedBands(QObject *sc, const QString &pageId);
+bool isOwnBand(const QString &key);
 void highlightToTextLayer(QQuickItem *dv, QObject *sc, const QString &pageId, const QList<QRect> &strokes, int color,
                           uint argb);
 
@@ -726,12 +727,15 @@ void checkHighlights(QQuickItem *dv, QObject *sc, const QString &pageId, const Q
         QList<QRect> over;
         if (snap)
             for (const QRect &r : po.rects)
-                if (newKeys.contains(rectKey(r)) && overTextObjects(pageId, r)) over << r;
+                if (newKeys.contains(rectKey(r)) && !isOwnBand(rectKey(r)) && overTextObjects(pageId, r)) over << r;
         TLOG("highlight check: %lld new stroke(s) on layer %d, highlighter %d, snap to text %d, %lld over objects",
              (long long)newKeys.size(), sc->property("currentLayer").toInt(), hl ? 1 : 0, snap ? 1 : 0, (long long)over.size());
         if (!over.isEmpty()) { highlightToTextLayer(dv, sc, pageId, over, color, argb); return; }
     }
     if (po.found.isEmpty()) return;
+    // the bands live on the writing layer now (layer.h): a highlight is not "gone" for not being on this layer;
+    // erased bands are seen there (dropErasedBands)
+    if (tl >= 0 && sc->property("currentLayer").toInt() == tl) return;
     // gone: none of a highlight's strokes on any copy of the object
     QHash<int, QSet<int>> shown;   // record index -> highlights seen
     QSet<int> seen;
