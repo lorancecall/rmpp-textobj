@@ -363,7 +363,7 @@ void layerChanged() {
 
 // Choosing another tool while the Text objects layer is current: the writing layer current first, so ink never goes
 // there (the selection tool's selected property turning false).
-void toolChanged() {
+void toolChanged(int tries = 0) {
     QString page;
     QObject *sc = pageScene(&page);
     if (!sc || g_edit.box || putting() || selectionToolActive()) return;
@@ -371,6 +371,18 @@ void toolChanged() {
     if (t < 0 || sc->property("currentLayer").toInt() != t) return;
     const int w = writingLayer(sc);
     if (w < 0) return;
+    // the tool must stay off for a moment: it flickered off while a double tap was turning it on, and the object
+    // then vanished from the screen with its selection on a layer no longer current (device, c67d0d58)
+    // (only right after our own double tap: a pen chosen otherwise switches at once, so no ink lands on this layer)
+    if (tries == 0 && g_lastDoubleTap.isValid() && g_lastDoubleTap.elapsed() < 1500) {
+        QTimer::singleShot(300, qApp, [] { toolChanged(1); });
+        return;
+    }
+    if (sc->property("selectionItemCount").toInt() > 0) {   // ended here, a pending move kept (probed: a clear drops it)
+        if (!sc->property("pendingEdit").value<QTransform>().isIdentity())
+            QMetaObject::invokeMethod(sc, "applyPendingEdit", Qt::DirectConnection, Q_ARG(int, t));
+        QMetaObject::invokeMethod(sc, "clearSelectedItems", Qt::DirectConnection);
+    }
     readTextBoxes(sc);
     TLOG("text layer: another tool chosen on it: layer %d current for writing", w + 1);
     switchLayer(sc, w);
