@@ -45,6 +45,7 @@ int writingLayer(QObject *sc) {
 }
 
 int g_ownLayerSwitch = 0;   // our own setCurrentLayer calls not yet seen applied
+void followBands(QObject *sc, const QString &pageId);   // below: bands follow their moved objects
 // The Text objects layer was made current by the user (the layers panel), not by the add-on (a conversion putting its
 // ink there, a double tap going to an object). The dashed boxes show only then (developer: a box showed on a new
 // object and not on the others for a moment; the boxes are for working on that layer).
@@ -475,7 +476,7 @@ void layerChanged() {
     const bool own = g_ownLayerSwitch > 0 || putting() || tapSequence() || g_edit.box;
     if (g_ownLayerSwitch > 0) --g_ownLayerSwitch;
     const int t = textLayer(sc), cur = sc->property("currentLayer").toInt();
-    g_userOnText = t >= 0 && cur == t && !own;
+    if (!own) g_userOnText = t >= 0 && cur == t;   // our own switches (a move's bands followed) keep the user's choice
     requestBoxes();
     if (t >= 0 && cur == t) {
         if (!putting() && !g_edit.box && !selectionToolActive()) useSelectionTool();
@@ -552,7 +553,11 @@ void watchLayers() {
             g_moved = false;
             QString p;
             QObject *s = pageScene(&p);
-            if (s && g_own == 0) { TLOG("a move or resize: one step"); pushGroup(s, p, 1, false); }
+            if (s && g_own == 0) {
+                TLOG("a move or resize: one step");
+                pushGroup(s, p, 1, false);
+                QTimer::singleShot(900, qApp, [] { QString pg; if (QObject *s2 = pageScene(&pg)) followBands(s2, pg); });
+            }
         }
         QTimer::singleShot(700, qApp, [] { QString p; if (QObject *s = pageScene(&p)) readTextBoxes(s); });
     });
@@ -799,13 +804,15 @@ void watchLayersMenu() {
     }
 }
 
-// ---- highlights drawn over text objects from the writing layer ----
-// The highlighter draws on the writing layer, the objects are on the Text objects layer. A highlighter stroke mostly
-// over an object (its box as last read, textlayer.json's hint) becomes a straight band on the Text objects layer, as
-// for a highlight on the object itself (src/highlight.h): the characters it covers, the stroke's colour, recorded with
-// the object, so it moves, is edited and is kept with it. Order, so that nothing is lost when it cannot be done: the
-// freehand stroke taken back by an undo (it is the last step; checked, else redone), the Text objects layer current,
-// the bands drawn there (nothing under the stroke: the stroke redone, unchanged). One undo press takes the bands back.
+// ---- highlights on text objects: bands on the writing layer, bound to their object ----
+// The highlighter draws on the writing layer, the objects are on the Text objects layer. With xochitl's "Snap to
+// text" on, a highlighter stroke mostly over an object (its hinted box) is replaced by straight bands on the writing
+// layer, over the characters it covers, in its colour (developer, #3: the eraser then takes a highlight off as on
+// typed text, the glyphs being on another layer). Each band set is bound to its object for the session: when the
+// object has moved or was resized, its bands are drawn again over the same characters (followBands); bands erased
+// are dropped. Steps: the freehand stroke taken back by an undo (it is the last step; checked, else redone), the
+// Text objects layer current for a moment to read the object, the bands drawn on the writing layer. One undo press
+// takes the bands back.
 bool overTextObjects(const QString &page, const QRect &r) {
     loadTextBoxes();
     const double a = double(r.width()) * r.height();
@@ -817,12 +824,27 @@ bool overTextObjects(const QString &page, const QRect &r) {
     return false;
 }
 
+struct BandSet {
+    QString recId, page;
+    Hl hl;                 // characters and colour
+    QRectF box;            // the object's box when the bands were drawn
+    QSet<QString> keys;    // rect keys of the band strokes on the writing layer
+};
+QList<BandSet> g_bandSets;
+
+// Rect keys of the strokes on the current layer that were not in before.
+QSet<QString> newRectKeys(QObject *sc, const QSet<QString> &before) {
+    QSet<QString> out;
+    for (const QRect &r : pageLineRects(sc)) if (!before.contains(rectKey(r))) out.insert(rectKey(r));
+    return out;
+}
+
 void highlightToTextLayer(QQuickItem *dv, QObject *sc, const QString &pageId, const QList<QRect> &strokes, int color,
                           uint argb) {
     const int t = textLayer(sc), w = sc->property("currentLayer").toInt();
     QQuickItem *prev = activeToolButton();
     if (t < 0 || w == t || strokes.isEmpty() || putting() || !prev) return;
-    TLOG("highlight over a text object (layer %d, colour %d): a band on the text layer", w, color);
+    TLOG("highlight over a text object (layer %d, colour %d): bands on this layer", w, color);
     g_putting = true;
     g_putStarted.start();
     QPointer<QObject> scp(sc);
@@ -840,8 +862,6 @@ void highlightToTextLayer(QQuickItem *dv, QObject *sc, const QString &pageId, co
             g_putting = false;
         });
     };
-    // the freehand stroke is the last step: taken back by an undo (a highlighter stroke is not selected by a rect,
-    // device: the selection stayed empty), checked to be exactly that stroke, else redone
     if (strokes.size() != 1 || !sc->property("undoAvailable").toBool()) { done("left as drawn (not one stroke)"); return; }
     QMetaObject::invokeMethod(sc, "undo", Qt::DirectConnection);
     QTimer::singleShot(400, sc, [=] {
@@ -857,10 +877,8 @@ void highlightToTextLayer(QQuickItem *dv, QObject *sc, const QString &pageId, co
         QTimer::singleShot(500, scp, [=] {
             if (!scp) { g_putting = false; return; }
             const PageObjects po = findObjects(scp, pageId, true);
-            struct Pend { QString recId; int index; QList<QRectF> bands; QPointF d; double k; };
+            struct Pend { QString recId; Hl hl; QRectF box; QPointF d; double k; };
             QList<Pend> pend;
-            QList<Hl> draw;
-            QHash<QString, QList<Hl>> recHl;
             for (const QRect &s : strokes)
                 for (const Placement &p : po.found) {
                     const Rec &r = po.recs[p.rec];
@@ -870,40 +888,161 @@ void highlightToTextLayer(QQuickItem *dv, QObject *sc, const QString &pageId, co
                     h.argb = argb;
                     h.rects = bandRects(r.text, pageLines(r, p), h.a, h.b);
                     if (h.rects.isEmpty()) continue;
-                    if (!recHl.contains(r.id)) recHl[r.id] = hlOf(r);
-                    Hl stored = h;
-                    stored.rects.clear();   // the bands' rects once drawn
-                    pend << Pend{r.id, int(recHl[r.id].size()), h.rects, p.d, p.k};
-                    recHl[r.id].append(stored);
-                    draw << h;
+                    pend << Pend{r.id, h, p.box, p.d, p.k};
                     break;
                 }
-            const int drawn = draw.isEmpty() ? 0 : addBands(scp, draw);
-            if (drawn <= 0) {   // back to the freehand stroke
-                setLayer(scp, w);
+            setLayer(scp, w);
+            if (pend.isEmpty()) {   // back to the freehand stroke
                 QTimer::singleShot(400, scp, [=] {
                     if (scp) QMetaObject::invokeMethod(scp, "redo", Qt::DirectConnection);
-                    done(draw.isEmpty() ? "no text object under it: left as drawn" : "no band drawn: left as drawn");
+                    done("no text object under it: left as drawn");
                 });
                 return;
             }
-            pushGroup(scp, pageId, drawn, false);   // one undo press takes the bands back
-            QTimer::singleShot(800, scp, [=] {
+            QTimer::singleShot(400, scp, [=] {
                 if (!scp) { g_putting = false; return; }
-                const QList<QRect> now = pageLineRects(scp);   // still the text layer: the bands' rects
-                QHash<QString, QList<Hl>> changed = recHl;
-                for (const Pend &pd : pend) {
-                    QList<QRectF> found;
-                    for (const QRectF &e : pd.bands)
-                        for (const QRect &q : now)
-                            if (sameBand(q, e, 1.0)) { found << QRectF((QPointF(q.topLeft()) - pd.d) / pd.k, QSizeF(q.size()) / pd.k); break; }
-                    QList<Hl> &hl = changed[pd.recId];
-                    if (pd.index < hl.size()) hl[pd.index].rects = found;
+                QSet<QString> was;
+                for (const QRect &r : pageLineRects(scp)) was.insert(rectKey(r));
+                QList<Hl> draw;
+                for (const Pend &pd : pend) draw << pd.hl;
+                const int drawn = addBands(scp, draw);
+                if (drawn <= 0) {
+                    QMetaObject::invokeMethod(scp, "redo", Qt::DirectConnection);
+                    done(drawn < 0 ? "this xochitl version is not supported" : "no band drawn: left as drawn");
+                    return;
                 }
-                for (auto it = changed.cbegin(); it != changed.cend(); ++it) setRecordHl(it.key(), hlJson(it.value()));
-                TLOG("highlight moved to the text layer: %d band(s)", drawn);
-                done(nullptr);
+                pushGroup(scp, pageId, drawn, false);   // one undo press takes the bands back
+                QTimer::singleShot(600, scp, [=] {
+                    if (!scp) { g_putting = false; return; }
+                    const QList<QRect> nowRects = pageLineRects(scp);
+                    QHash<QString, QList<Hl>> recHl;
+                    const QList<Rec> recs = readRecs();
+                    for (const Pend &pd : pend) {
+                        BandSet b{pd.recId, pageId, pd.hl, pd.box, {}};
+                        for (const QRectF &e : pd.hl.rects)
+                            for (const QRect &q : nowRects)
+                                if (!was.contains(rectKey(q)) && sameBand(q, e, 1.0)) { b.keys.insert(rectKey(q)); break; }
+                        g_bandSets << b;
+                        if (!recHl.contains(pd.recId))
+                            for (const Rec &r : recs) if (r.id == pd.recId) recHl[pd.recId] = hlOf(r);
+                        Hl stored = pd.hl;   // the record keeps the characters and colour (rects in record units)
+                        stored.rects.clear();
+                        for (const QRectF &e : pd.hl.rects) stored.rects << QRectF((e.topLeft() - pd.d) / pd.k, e.size() / pd.k);
+                        recHl[pd.recId] << stored;
+                    }
+                    for (auto it = recHl.cbegin(); it != recHl.cend(); ++it) setRecordHl(it.key(), hlJson(it.value()));
+                    TLOG("highlight: %d band(s) on the writing layer, bound to %lld object(s)", drawn, (long long)pend.size());
+                    done(nullptr);
+                });
             });
         });
     });
+}
+
+// After objects on the Text objects layer moved or were resized (their layer current, nothing selected): the bands
+// of each are drawn again over the same characters at the new place, on the writing layer. Joins the move's undo
+// group. Bands whose strokes are all gone (erased) are dropped.
+void followBands(QObject *sc, const QString &pageId) {
+    if (g_bandSets.isEmpty() || putting() || g_edit.box) return;
+    const int t = textLayer(sc), w = writingLayer(sc);
+    if (t < 0 || w < 0 || sc->property("currentLayer").toInt() != t || sc->property("selectionItemCount").toInt() > 0) return;
+    const PageObjects po = findObjects(sc, pageId, true);
+    struct Job { int set; QList<QRectF> bands; QRectF box; };
+    QList<Job> jobs;
+    for (int i = 0; i < g_bandSets.size(); ++i) {
+        const BandSet &b = g_bandSets[i];
+        if (b.page != pageId) continue;
+        const Placement *best = nullptr;
+        double bd = 1e18;
+        for (const Placement &p : po.found) {
+            if (po.recs[p.rec].id != b.recId) continue;
+            const QPointF d = p.box.center() - b.box.center();
+            const double dd = d.x() * d.x() + d.y() * d.y();
+            if (dd < bd) { bd = dd; best = &p; }
+        }
+        if (!best || sameBox(best->box, b.box)) continue;
+        const Rec &r = po.recs[best->rec];
+        jobs << Job{i, bandRects(r.text, pageLines(r, *best), b.hl.a, b.hl.b), best->box};
+    }
+    if (jobs.isEmpty()) return;
+    TLOG("bands: %lld object(s) moved: their bands follow", (long long)jobs.size());
+    g_putting = true;
+    g_putStarted.start();
+    QPointer<QObject> scp(sc);
+    setLayer(sc, w);
+    auto steps = std::make_shared<int>(0);
+    auto run = std::make_shared<std::function<void(int)>>();
+    *run = [scp, pageId, jobs, steps, run, t, w](int j) {
+        if (!scp) { g_putting = false; return; }
+        if (j >= jobs.size()) {
+            setLayer(scp, t);
+            if (*steps > 0) pushGroup(scp, pageId, *steps + 1, true);   // with the move: one press
+            QTimer::singleShot(400, qApp, [] { g_putting = false; requestBoxes(); });
+            return;
+        }
+        const Job job = jobs[j];
+        if (job.set >= g_bandSets.size()) { (*run)(j + 1); return; }
+        const QList<QRect> rects = pageLineRects(scp);
+        QList<int> want;
+        for (int i = 0; i < rects.size(); ++i) if (g_bandSets[job.set].keys.contains(rectKey(rects[i]))) want << i;
+        auto draw = [scp, job, steps, run, j](bool deleted) {
+            if (!scp) { g_putting = false; return; }
+            if (deleted) ++*steps;
+            QSet<QString> was;
+            for (const QRect &r : pageLineRects(scp)) was.insert(rectKey(r));
+            Hl h = g_bandSets[job.set].hl;
+            h.rects = job.bands;
+            const int n = addBands(scp, {h});
+            if (n > 0) *steps += n;
+            QTimer::singleShot(500, scp, [scp, job, was, run, j] {
+                if (!scp) { g_putting = false; return; }
+                if (job.set < g_bandSets.size()) {
+                    BandSet &b = g_bandSets[job.set];
+                    b.keys = newRectKeys(scp, was);
+                    b.box = job.box;
+                }
+                (*run)(j + 1);
+            });
+        };
+        if (want.isEmpty()) { TLOG("bands: none left to move (erased): drawn again"); draw(false); return; }
+        setSelection(scp, rects, want, [scp, want, draw, w] {
+            if (!scp) { g_putting = false; return; }
+            if (scp->property("selectionItemCount").toInt() != want.size()) {
+                TLOG("bands: the old bands could not be selected alone: left, new ones drawn");
+                endSelection(scp, nullptr);
+                draw(false);
+                return;
+            }
+            QMetaObject::invokeMethod(scp, "deleteSelectedItems", Q_ARG(int, w));
+            QTimer::singleShot(300, scp, [draw] { draw(true); });
+        });
+    };
+    QTimer::singleShot(500, sc, [run] { (*run)(0); });
+}
+
+// Bands whose strokes are all gone from the writing layer (erased there): unbound, and the highlight dropped from the
+// record. Called on the writing layer when its strokes changed.
+void dropErasedBands(QObject *sc, const QString &pageId) {
+    if (g_bandSets.isEmpty()) return;
+    const int w = writingLayer(sc);
+    if (w < 0 || sc->property("currentLayer").toInt() != w) return;
+    QSet<QString> now;
+    for (const QRect &r : pageLineRects(sc)) now.insert(rectKey(r));
+    for (int i = int(g_bandSets.size()) - 1; i >= 0; --i) {
+        BandSet &b = g_bandSets[i];
+        if (b.page != pageId || b.keys.isEmpty()) continue;
+        bool any = false;
+        for (const QString &k : b.keys) if (now.contains(k)) { any = true; break; }
+        if (any) continue;
+        const QString recId = b.recId;
+        const Hl gone = b.hl;
+        g_bandSets.removeAt(i);
+        for (const Rec &r : readRecs()) {
+            if (r.id != recId) continue;
+            QList<Hl> keep;
+            for (const Hl &h : hlOf(r)) if (!(h.a == gone.a && h.b == gone.b && h.color == gone.color)) keep << h;
+            setRecordHl(recId, hlJson(keep));
+        }
+        TLOG("bands: a highlight erased");
+    }
 }

@@ -707,6 +707,7 @@ void snapHighlights(QQuickItem *dv, QObject *sc, const QList<HlCapture> &caps) {
 
 // layer.h: a highlighter stroke drawn on the writing layer over objects of the Text objects layer
 bool overTextObjects(const QString &page, const QRect &r);
+void dropErasedBands(QObject *sc, const QString &pageId);
 void highlightToTextLayer(QQuickItem *dv, QObject *sc, const QString &pageId, const QList<QRect> &strokes, int color,
                           uint argb);
 
@@ -716,6 +717,7 @@ void highlightToTextLayer(QQuickItem *dv, QObject *sc, const QString &pageId, co
 void checkHighlights(QQuickItem *dv, QObject *sc, const QString &pageId, const QSet<QString> &newKeys) {
     const PageObjects po = findObjects(sc, pageId, true);
     const int tl = textLayer(sc);
+    if (tl >= 0 && sc->property("currentLayer").toInt() != tl) dropErasedBands(sc, pageId);
     if (!newKeys.isEmpty() && tl >= 0 && sc->property("currentLayer").toInt() != tl) {
         int color = kHighlighterYellow;
         uint argb = 0;
