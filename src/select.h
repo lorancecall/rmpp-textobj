@@ -720,12 +720,14 @@ void checkHighlights(QQuickItem *dv, QObject *sc, const QString &pageId, const Q
         int color = kHighlighterYellow;
         uint argb = 0;
         QObject *ph = dv->property("penHandler").value<QObject *>();
-        if (highlighterInUse(ph, &color, &argb) && snapToTextOn(ph)) {
-            QList<QRect> over;
+        const bool hl = highlighterInUse(ph, &color, &argb), snap = hl && snapToTextOn(ph);
+        QList<QRect> over;
+        if (snap)
             for (const QRect &r : po.rects)
                 if (newKeys.contains(rectKey(r)) && overTextObjects(pageId, r)) over << r;
-            if (!over.isEmpty()) { highlightToTextLayer(dv, sc, pageId, over, color, argb); return; }
-        }
+        TLOG("highlight check: %lld new stroke(s) on layer %d, highlighter %d, snap to text %d, %lld over objects",
+             (long long)newKeys.size(), sc->property("currentLayer").toInt(), hl ? 1 : 0, snap ? 1 : 0, (long long)over.size());
+        if (!over.isEmpty()) { highlightToTextLayer(dv, sc, pageId, over, color, argb); return; }
     }
     if (po.found.isEmpty()) return;
     // gone: none of a highlight's strokes on any copy of the object
