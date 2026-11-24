@@ -202,13 +202,16 @@ bool isBand(const PageObjects &po, const Placement &p, int i) {
 
 // Whether page rect i is a highlighter-like stroke on the object at p: not one of its strokes, as thick as a
 // highlighter (at least 0.35 em high), and mostly (70%) on the object.
-bool isHighlightStroke(const PageObjects &po, const Placement &p, int i) {
-    if (p.members.contains(i)) return false;
-    const QRect &r = po.rects[i];
-    const double em = po.recs[p.rec].em * p.k;
+// A highlighter stroke with bounds r lies on the object placed at p (record rec): about a line high, mostly on it.
+bool highlightOn(const Rec &rec, const Placement &p, const QRect &r) {
+    const double em = rec.em * p.k;
     if (r.height() < 0.35 * em || r.width() < 0.4 * em || r.height() > 2.5 * em) return false;
     const QRectF on = QRectF(r).intersected(p.box.adjusted(-0.25 * em, -0.25 * em, 0.25 * em, 0.25 * em));
     return on.width() * on.height() >= 0.7 * r.width() * r.height();
+}
+
+bool isHighlightStroke(const PageObjects &po, const Placement &p, int i) {
+    return !p.members.contains(i) && highlightOn(po.recs[p.rec], p, po.rects[i]);
 }
 
 // ---- drawing bands ----

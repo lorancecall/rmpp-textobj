@@ -705,10 +705,27 @@ void snapHighlights(QQuickItem *dv, QObject *sc, const QList<HlCapture> &caps) {
     });
 }
 
+// layer.h: a highlighter stroke drawn on the writing layer over objects of the Text objects layer
+bool overTextObjects(const QString &page, const QRect &r);
+void highlightToTextLayer(QQuickItem *dv, QObject *sc, const QString &pageId, const QList<QRect> &strokes, int color,
+                          uint argb);
+
 // After the page's strokes changed (settled): highlights whose strokes are gone are dropped from their records; new
-// highlighter strokes on objects (the highlighter is in use) are recorded and snapped.
+// highlighter strokes on objects (the highlighter is in use) are recorded and snapped. New highlighter strokes on
+// another layer over objects of the Text objects layer become bands there (highlightToTextLayer).
 void checkHighlights(QQuickItem *dv, QObject *sc, const QString &pageId, const QSet<QString> &newKeys) {
     const PageObjects po = findObjects(sc, pageId, true);
+    const int tl = textLayer(sc);
+    if (!newKeys.isEmpty() && tl >= 0 && sc->property("currentLayer").toInt() != tl) {
+        int color = kHighlighterYellow;
+        uint argb = 0;
+        if (highlighterInUse(dv->property("penHandler").value<QObject *>(), &color, &argb)) {
+            QList<QRect> over;
+            for (const QRect &r : po.rects)
+                if (newKeys.contains(rectKey(r)) && overTextObjects(pageId, r)) over << r;
+            if (!over.isEmpty()) { highlightToTextLayer(dv, sc, pageId, over, color, argb); return; }
+        }
+    }
     if (po.found.isEmpty()) return;
     // gone: none of a highlight's strokes on any copy of the object
     QHash<int, QSet<int>> shown;   // record index -> highlights seen

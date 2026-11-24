@@ -798,3 +798,114 @@ void watchLayersMenu() {
         }, Qt::DirectConnection);
     }
 }
+
+// ---- highlights drawn over text objects from the writing layer ----
+// The highlighter draws on the writing layer, the objects are on the Text objects layer. A highlighter stroke mostly
+// over an object (its box as last read, textlayer.json's hint) becomes a straight band on the Text objects layer, as
+// for a highlight on the object itself (src/highlight.h): the characters it covers, the stroke's colour, recorded with
+// the object, so it moves, is edited and is kept with it. Order, so that nothing is lost when it cannot be done: the
+// Text objects layer current, the bands drawn there (nothing under the stroke: back, unchanged), then the writing
+// layer current again and the freehand stroke deleted (it is the only stroke selected there: no glyph strokes on that
+// layer). One undo press takes both back.
+bool overTextObjects(const QString &page, const QRect &r) {
+    loadTextBoxes();
+    const double a = double(r.width()) * r.height();
+    if (a <= 0) return false;
+    for (const QRectF &b : g_textBoxes.value(page)) {
+        const QRectF on = QRectF(r).intersected(b.adjusted(-8, -8, 8, 8));
+        if (on.width() * on.height() >= 0.6 * a) return true;
+    }
+    return false;
+}
+
+void highlightToTextLayer(QQuickItem *dv, QObject *sc, const QString &pageId, const QList<QRect> &strokes, int color,
+                          uint argb) {
+    const int t = textLayer(sc), w = sc->property("currentLayer").toInt();
+    QQuickItem *prev = activeToolButton();
+    if (t < 0 || w == t || strokes.isEmpty() || putting() || !prev) return;
+    TLOG("highlight over a text object (layer %d, colour %d): a band on the text layer", w, color);
+    g_putting = true;
+    g_putStarted.start();
+    QPointer<QObject> scp(sc);
+    QPointer<QQuickItem> dvp(dv), prevp(prev);
+    QSet<QString> keys;
+    for (const QRect &r : strokes) keys.insert(rectKey(r));
+    auto back = [scp, dvp, prevp, w](const char *why) {
+        if (why) TLOG("highlight left as drawn: %s", why);
+        if (scp) { endSelection(scp, dvp); setLayer(scp, w); }
+        QTimer::singleShot(400, qApp, [prevp] { if (prevp) tapItem(prevp); g_putting = false; });
+    };
+    setLayer(sc, t);
+    QTimer::singleShot(500, sc, [=] {
+        if (!scp) { g_putting = false; return; }
+        const PageObjects po = findObjects(scp, pageId, true);
+        struct Pend { QString recId; int index; QList<QRectF> bands; QPointF d; double k; };
+        QList<Pend> pend;
+        QList<Hl> draw;
+        QHash<QString, QList<Hl>> recHl;
+        for (const QRect &s : strokes)
+            for (const Placement &p : po.found) {
+                const Rec &r = po.recs[p.rec];
+                Hl h;
+                if (!highlightOn(r, p, s) || !rangeFromRect(r.text, pageLines(r, p), QRectF(s), &h.a, &h.b)) continue;
+                h.color = color;
+                h.argb = argb;
+                h.rects = bandRects(r.text, pageLines(r, p), h.a, h.b);
+                if (h.rects.isEmpty()) continue;
+                if (!recHl.contains(r.id)) recHl[r.id] = hlOf(r);
+                Hl stored = h;
+                stored.rects.clear();   // the bands' rects once drawn
+                pend << Pend{r.id, int(recHl[r.id].size()), h.rects, p.d, p.k};
+                recHl[r.id].append(stored);
+                draw << h;
+                break;
+            }
+        if (draw.isEmpty()) { back("no text object under it"); return; }
+        const int drawn = addBands(scp, draw);
+        if (drawn <= 0) { back(drawn < 0 ? "this xochitl version is not supported" : "no band drawn"); return; }
+        QTimer::singleShot(800, scp, [=] {
+            if (!scp) { g_putting = false; return; }
+            const QList<QRect> now = pageLineRects(scp);   // still the text layer: the bands' rects
+            QHash<QString, QList<Hl>> changed = recHl;
+            for (const Pend &pd : pend) {
+                QList<QRectF> found;
+                for (const QRectF &e : pd.bands)
+                    for (const QRect &q : now)
+                        if (sameBand(q, e, 1.0)) { found << QRectF((QPointF(q.topLeft()) - pd.d) / pd.k, QSizeF(q.size()) / pd.k); break; }
+                QList<Hl> &hl = changed[pd.recId];
+                if (pd.index < hl.size()) hl[pd.index].rects = found;
+            }
+            for (auto it = changed.cbegin(); it != changed.cend(); ++it) setRecordHl(it.key(), hlJson(it.value()));
+            setLayer(scp, w);
+            useSelectionTool();
+            QTimer::singleShot(600, scp, [=] {
+                if (!scp) { g_putting = false; return; }
+                const QList<QRect> rects = pageLineRects(scp);
+                QList<int> want;
+                for (int i = 0; i < rects.size(); ++i) if (keys.contains(rectKey(rects[i]))) want << i;
+                if (want.size() != keys.size()) {
+                    pushGroup(scp, pageId, drawn, false);
+                    back("the freehand stroke is gone (the band stays)");
+                    return;
+                }
+                setSelection(scp, rects, want, [=] {
+                    if (!scp) { g_putting = false; return; }
+                    QSet<QString> sel;
+                    for (const QRect &r : lineRects(scp)) sel.insert(rectKey(r));
+                    if (sel != keys) {
+                        pushGroup(scp, pageId, drawn, false);
+                        back("the freehand stroke could not be selected alone (the band stays)");
+                        return;
+                    }
+                    QMetaObject::invokeMethod(scp, "deleteSelectedItems", Q_ARG(int, w));
+                    pushGroup(scp, pageId, drawn + 1, false);   // one undo press: the bands and the deletion
+                    TLOG("highlight moved to the text layer: %d band(s)", drawn);
+                    QTimer::singleShot(300, scp, [=] {
+                        back(nullptr);
+                        if (dvp) QMetaObject::invokeMethod(dvp, "updateAfterStroke");
+                    });
+                });
+            });
+        });
+    });
+}
