@@ -45,6 +45,10 @@ int writingLayer(QObject *sc) {
 }
 
 int g_ownLayerSwitch = 0;   // our own setCurrentLayer calls not yet seen applied
+// The Text objects layer was made current by the user (the layers panel), not by the add-on (a conversion putting its
+// ink there, a double tap going to an object). The dashed boxes show only then (developer: a box showed on a new
+// object and not on the others for a moment; the boxes are for working on that layer).
+bool g_userOnText = false;
 
 void setLayer(QObject *sc, int i) {
     if (sc->property("currentLayer").toInt() == i) return;
@@ -468,9 +472,11 @@ void layerChanged() {
     QString page;
     QObject *sc = pageScene(&page);
     if (!sc) return;
-    requestBoxes();
+    const bool own = g_ownLayerSwitch > 0 || putting() || tapSequence() || g_edit.box;
     if (g_ownLayerSwitch > 0) --g_ownLayerSwitch;
     const int t = textLayer(sc), cur = sc->property("currentLayer").toInt();
+    g_userOnText = t >= 0 && cur == t && !own;
+    requestBoxes();
     if (t >= 0 && cur == t) {
         if (!putting() && !g_edit.box && !selectionToolActive()) useSelectionTool();
         return;
@@ -655,11 +661,12 @@ void readBoxesNow() {
         g_restOthers = others;
         g_restPage = page;
         g_restValid = true;
-        g_pageBoxes = others;
+        if (g_userOnText) g_pageBoxes = others;   // the snapshot is kept either way (pushing apart uses it)
         QRectF ou;
         for (const QRectF &o : others) ou |= o;
-        TLOG("boxes: %lld shown in %.0f,%.0f %.0fx%.0f, %lld selected left out", (long long)others.size(), ou.x(),
-             ou.y(), ou.width(), ou.height(), (long long)sel.size());
+        TLOG("boxes: %lld %s in %.0f,%.0f %.0fx%.0f, %lld selected left out", (long long)others.size(),
+             g_userOnText ? "shown" : "read (not shown: layer not chosen by the user)", ou.x(), ou.y(), ou.width(),
+             ou.height(), (long long)sel.size());
     }
     mapBoxes();
 }
