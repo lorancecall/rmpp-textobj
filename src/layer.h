@@ -245,6 +245,8 @@ int textObjectsAt(const QString &page, const QPointF &at, QRectF *box = nullptr)
     return int(hits.size());
 }
 
+bool g_moved = false;   // a selection was moved or resized: one step when it ends
+
 // ---- objects kept apart (developer, #3) ----
 // The nearest place for `box` where it overlaps none of `others` (each kept 6 px away): the offset 0 when it is free,
 // else the smallest shift up, down, left or right, at most the box's own size. False: no room near.
@@ -289,13 +291,18 @@ void keepApartAfterMove(QObject *sc) {
     if (pe.isIdentity()) return;
     const QList<QRect> sel = lineRects(sc);   // the selected strokes, where they were
     if (sel.isEmpty()) return;
-    QList<QRectF> others;   // everything else on the layer (an area query leaves the selection out)
-    for (const QRect &r : pageLineRects(sc)) others << QRectF(r);
+    // everything else on the layer: pageLineRects adds the selection back where it was, so it is left out by key
+    // (else a short move collided with the object's own old place: review of b5a5882)
+    QSet<QString> selKeys;
+    for (const QRect &r : sel) selKeys.insert(rectKey(r));
+    QList<QRectF> others;
+    for (const QRect &r : pageLineRects(sc)) if (!selKeys.contains(rectKey(r))) others << QRectF(r);
     const QRectF moved = pe.mapRect(QRectF(unite(sel)));
     QPointF off;
     g_pushing = true;
     if (!freePlace(moved, others, &off)) {
         QMetaObject::invokeMethod(sc, "cancelPendingEdit");
+        g_moved = false;   // no step: nothing to group when the selection ends
         if (QQuickItem *dv = documentView()) showHint(dv, QStringLiteral("No room for the text object there: put back."));
         TLOG("move on the text layer: no room near: put back");
     } else if (!off.isNull()) {
@@ -327,7 +334,13 @@ void switchLayer(QObject *sc, int to) {
 void backToWriting(QObject *sc, const char *why) {
     const int t = textLayer(sc), w = writingLayer(sc);
     if (t < 0 || w < 0 || sc->property("currentLayer").toInt() != t) return;
-    if (sc->property("selectionItemCount").toInt() > 0) QMetaObject::invokeMethod(sc, "clearSelectedItems");
+    if (sc->property("selectionItemCount").toInt() > 0) {
+        // a pending move is committed first (clearing the selection would drop it: probed); it is then a step of
+        // its own (g_moved: a group of 1 at selectionCleared), and the switch merges with it
+        if (!sc->property("pendingEdit").value<QTransform>().isIdentity())
+            QMetaObject::invokeMethod(sc, "applyPendingEdit", Qt::DirectConnection, Q_ARG(int, t));
+        QMetaObject::invokeMethod(sc, "clearSelectedItems", Qt::DirectConnection);
+    }
     readTextBoxes(sc);
     TLOG("text layer: %s: layer %d current for writing", why, w + 1);
     switchLayer(sc, w);
@@ -363,7 +376,6 @@ void toolChanged() {
     switchLayer(sc, w);
 }
 
-bool g_moved = false;   // a selection was moved or resized: one step when it ends
 
 // Activity that may be a step of its own (edit.h groupsUnknown): a pen stroke (not a lasso), a move or resize, typed
 // text. A selection ending on the Text objects layer reads its boxes again.
