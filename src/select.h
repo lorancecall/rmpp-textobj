@@ -533,6 +533,22 @@ void doubleTapNow(double x, double y, bool onText = false, bool edit = true) {
         }
         return;
     }
+    if (crossed && sc->property("currentLayer").toInt() == textLayer(sc)) {
+        // a foreign stroke whose rect encloses one of this object's strokes cannot be taken out without taking that
+        // stroke too: the selection would stay mixed (and a tap on it could drag both objects): say so at once
+        QSet<int> own;
+        for (int m : hit->members) if (m >= 0) own.insert(m);
+        for (int i = 0; i < po.rects.size(); ++i) {
+            if (own.contains(i)) continue;
+            const QRect ra = po.rects[i].adjusted(-1, -1, 1, 1);
+            for (int m : own)
+                if (ra.contains(po.rects[m])) {
+                    showHint(dv, QStringLiteral("Text objects overlap here."));
+                    TLOG("double tap: another object's stroke encloses one of this object's: not selected");
+                    return;
+                }
+        }
+    }
     endSelection(sc, dv);
     QPointer<QObject> scp(sc);
     QPointer<QQuickItem> dvp(dv);
@@ -777,12 +793,15 @@ bool pageSettled(QObject *sc, const QString &pageId) {
 }
 
 void checkErasedObjects() {
-    if (g_edit.box || putting() || adjusting()) return;
+    if (g_edit.box || putting() || adjusting() || tapSequence()) return;
     QQuickItem *dv = documentView();
     QObject *sc = dv ? dv->property("sceneController").value<QObject *>() : nullptr;
     if (!sc || !dv->isVisible()) return;
     const QString pageId = dv->property("currentPageId").toString();
     if (pageId.isEmpty() || !pageSettled(sc, pageId)) return;
+    // an eraser never works with a selection; positions reported while an edit is pending cannot be trusted
+    if (sc->property("selectionItemCount").toInt() > 0 || !sc->property("pendingEdit").value<QTransform>().isIdentity())
+        return;
     if (pageId != g_check.page) { g_check = PageCheck{}; g_check.page = pageId; }
     const QList<QRect> rects = pageLineRects(sc);
     QSet<QString> keys;
@@ -818,8 +837,13 @@ void checkErasedObjects() {
         if (own >= qMax(2, (r.n + 1) / 2) && partials[j].matched < r.n) drop << r.id;
     }
     if (!drop.isEmpty()) {
-        updateRecords({}, drop);
-        TLOG("%lld text object(s) erased in part: plain strokes now", (long long)drop.size());
+        // The record is kept (review of f028522): only full matches make an object, so a part left over is plain
+        // strokes anyway, and a false firing (a mixed selection on overlapped objects, positions reported while an
+        // edit was pending) cost the record for good ("Test" could no longer be edited). Erase then undo also keeps
+        // its object now.
+        TLOG("%lld text object(s) found in part (records kept; %d selected, edit pending %d, layer %d)",
+             (long long)drop.size(), sc->property("selectionItemCount").toInt(),
+             sc->property("pendingEdit").value<QTransform>().isIdentity() ? 0 : 1, sc->property("currentLayer").toInt());
     }
     checkHighlights(dv, sc, pageId, added);
 }
