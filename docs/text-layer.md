@@ -139,10 +139,17 @@ An edit on T (T current) is A', B' on T: one group of 2.
 - One edit makes one object with one record (its id), selected and moved as a unit; when its bands are not matched to
   the expected rects exactly, the nearest strokes of the right count are taken as the bands so it is not split.
 
+- A highlighter stroke inside an object's box that covers none of its characters (the empty end of a short line):
+  no object takes it. The stroke was undone for the object before that was known, and the switch to the Text
+  objects layer had cleared the redo history, so it was lost. A copy of the stroke is kept from
+  `strokeCompleted(Line)` and drawn again (`addDrawingLine`, or `highlightWithLine` when it was a typed-text
+  highlight); a stroke drawn again is not taken up again.
+- Edit box preview colours: all six sampled on the device (2026-11-24).
+
 ### Typed text under an object
 
 - An overlay: an object may lie over typed text and is not pushed away by it (only other objects push).
-- A finger double tap where both are: the object. xochitl may take the same double tap and select a word of the
+- A finger double tap where both are: the object (checked with the pen, highlighter, selection and Text tools). xochitl may take the same double tap and select a word of the
   typed text (keyboard up; seen with the highlighter in use), and the selection tool cannot be turned on then: the
   text selection and cursor are ended first (`clearSelectedText`, `setCursorVisible(false, false)`).
 - A highlighter stroke over both: xochitl snaps it to the typed text (a glyph range: `highlightWithLine` in the pen
@@ -228,10 +235,8 @@ moving, matching conversions by the page's strokes, every timing window.
 - After a double tap the user is on T (visible in the layers menu) until another tool is chosen.
 - Objects follow typed text like ink (stock anchoring, decided).
 - The eraser does not reach bands on T; a highlight is removed in the edit box (Highlight off) or by undo.
-- A double tap on an object over typed text with the Text tool in use: not checked.
 - A highlighter stroke over an object and typed text: the part over typed text beyond the object is not highlighted
   (the object comes first, the whole stroke goes to it).
-- Edit box preview colours for blue and gray are estimates (yellow, green, pink and orange are sampled on the device).
 - A two-line object was once seen boxed line by line after a pushed move on the device; not reproduced in four
   tries. For 5 s after a pushed move, a record found only in part is logged (`objects: record ... found in part`)
   with the strokes that are off.

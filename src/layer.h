@@ -842,6 +842,35 @@ bool overTextObjects(const QString &page, const QRect &r) {
 // both was snapped by xochitl to the typed text (a glyph range) and the object under it got nothing (probed); the
 // text object comes first. xochitl's "Snap to text" setting is not reachable from here (no object has it), so the
 // glyph range is taken back after it is made.
+QRectF lineBounds(const void *line);
+QVariant g_hlLine;          // the last highlighter stroke (a Line), from strokeCompleted(Line)
+bool g_hlLineGlyph = false; // it had become a glyph range on typed text
+QElapsedTimer g_hlReaddAt;   // a stroke drawn again (readdHighlighterLine): not taken up again
+QRectF g_hlReaddRect;
+
+// The last highlighter stroke drawn again as it was: a pen stroke (addDrawingLine), or snapped to the typed text
+// again (highlightWithLine, as xochitl's own handler does). False: no copy.
+bool readdHighlighterLine(QObject *sc) {
+    if (!sc || !g_hlLine.isValid()) return false;
+    void *line = g_hlLine.data();
+    if (g_hlLineGlyph) {
+        const int m = sc->metaObject()->indexOfMethod("highlightWithLine(Line,SceneController::LineSnapMode)");
+        if (m < 0) return false;
+        int snap = 1;
+        void *a[] = {nullptr, line, &snap};
+        sc->qt_metacall(QMetaObject::InvokeMetaMethod, m, a);
+    } else {
+        const int m = sc->metaObject()->indexOfMethod("addDrawingLine(Line)");
+        if (m < 0) return false;
+        void *a[] = {nullptr, line};
+        sc->qt_metacall(QMetaObject::InvokeMetaMethod, m, a);
+    }
+    g_hlReaddRect = lineBounds(line);
+    g_hlReaddAt.start();
+    g_hlLine = QVariant();
+    return true;
+}
+
 // The bounds of a Line (a Q_GADGET: its boundingRect property, page coordinates; rmpp-format probes/capture.cpp).
 // Its type is looked up only from a pen signal, when xochitl's QML types are registered (rmpp-format NOTES: earlier
 // it crashed).
@@ -867,6 +896,13 @@ void highlighterCompleted(const void *line) {
     int color = kHighlighterYellow;
     uint argb = 0;
     const int tl = sc ? textLayer(sc) : -1;
+    // a copy of the stroke, to draw it again when it was taken back for an object that then did not take it
+    g_hlLine = QVariant();
+    g_hlLineGlyph = false;
+    if (sc && highlighterInUse(ph, &color, &argb)) {
+        const QMetaType mt = QMetaType::fromName("Line");
+        if (mt.isValid() && mt.sizeOf() == 88) g_hlLine = QVariant(mt, line);
+    }
     if (!sc || tl < 0 || sc->property("currentLayer").toInt() == tl || putting() || !highlighterInUse(ph, &color, &argb)
         || sc->property("rootDocumentLength").toInt() <= 0)
         return;
@@ -885,6 +921,7 @@ void highlighterCompleted(const void *line) {
         const QRect r = b.toAlignedRect();
         TLOG("highlight: a stroke on a text object snapped to typed text (%d,%d %dx%d): to the object", r.x(), r.y(),
              r.width(), r.height());
+        g_hlLineGlyph = true;
         highlightToTextLayer(dvp, scp, page, QList<QRect>{r}, color, argb);
     });
 }
@@ -932,6 +969,11 @@ void highlightToTextLayer(QQuickItem *dv, QObject *sc, const QString &pageId, co
     const int t = textLayer(sc), w = sc->property("currentLayer").toInt();
     QQuickItem *prev = activeToolButton();
     if (t < 0 || w == t || strokes.isEmpty() || putting() || !prev) return;
+    if (g_hlReaddAt.isValid() && g_hlReaddAt.elapsed() < 4000 && !strokes.isEmpty()
+        && QRectF(strokes.first()).intersects(g_hlReaddRect)) {
+        TLOG("highlight: the stroke drawn again after no object took it: left");
+        return;
+    }
     TLOG("highlight over a text object (layer %d, colour %d): bands on the text layer", w, color);
     g_putting = true;
     g_putStarted.start();
@@ -998,10 +1040,12 @@ void highlightToTextLayer(QQuickItem *dv, QObject *sc, const QString &pageId, co
                      qPrintable(why.join(QStringLiteral("; "))));
             }
             if (pend.isEmpty()) {   // back to the freehand stroke
+                // (a redo cannot bring it back: the switch to the Text objects layer cleared the redo history;
+                // device 2026-11-24: the stroke was gone) drawn again from its copy
                 setLayer(scp, w);
                 QTimer::singleShot(400, scp, [=] {
-                    if (scp) QMetaObject::invokeMethod(scp, "redo", Qt::DirectConnection);
-                    done("no text object under it: left as drawn");
+                    const bool again = scp && readdHighlighterLine(scp);
+                    done(again ? "no text object under it: the stroke drawn again" : "no text object under it: the stroke is lost (no copy)");
                 });
                 return;
             }
@@ -1011,8 +1055,8 @@ void highlightToTextLayer(QQuickItem *dv, QObject *sc, const QString &pageId, co
             if (drawn <= 0) {
                 setLayer(scp, w);
                 QTimer::singleShot(400, scp, [=] {
-                    if (scp) QMetaObject::invokeMethod(scp, "redo", Qt::DirectConnection);
-                    done(drawn < 0 ? "this xochitl version is not supported" : "no band drawn: left as drawn");
+                    if (scp) readdHighlighterLine(scp);
+                    done(drawn < 0 ? "this xochitl version is not supported" : "no band drawn: the stroke drawn again");
                 });
                 return;
             }
