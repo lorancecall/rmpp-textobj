@@ -357,6 +357,7 @@ void pushWhenPenUp(int tries) {
     }
     g_pushWait = false;
     keepApartAfterMove(s);
+    requestBoxes();
 }
 
 // ---- switching ----
@@ -468,6 +469,7 @@ void watchLayers() {
         QTimer::singleShot(0, qApp, [] { pushWhenPenUp(0); });
     });
     hook(sc, "rootDocumentLengthChanged()", [] { if (!putting() && g_own == 0) groupsUnknown("typed text"); });
+    hook(sc, "selectionItemCountChanged()", [] { requestBoxes(); });
     hook(sc, "selectionCleared()", [] {
         requestBoxes();
         if (g_moved) {
@@ -572,8 +574,19 @@ void readBoxesNow() {
     QObject *sc = pageScene(&page);
     g_pageBoxes.clear();
     const int t = sc ? textLayer(sc) : -1;
-    if (sc && t >= 0 && sc->property("currentLayer").toInt() == t && !g_edit.box && !putting())
-        for (const Placement &p : findObjects(sc, page, false).found) g_pageBoxes << p.box;
+    if (sc && t >= 0 && sc->property("currentLayer").toInt() == t && !g_edit.box && !putting()) {
+        // a selected object shows xochitl's selection frame instead, which moves with it; its box comes back at the
+        // new place when the selection ends (developer: the box should move with the object)
+        const PageObjects po = findObjects(sc, page, false);
+        QSet<QString> selKeys;
+        if (sc->property("selectionItemCount").toInt() > 0)
+            for (const QRect &r : lineRects(sc)) selKeys.insert(rectKey(r));
+        for (const Placement &p : po.found) {
+            bool selected = false;
+            for (int m : p.members) if (m >= 0 && selKeys.contains(rectKey(po.rects[m]))) { selected = true; break; }
+            if (!selected) g_pageBoxes << p.box;
+        }
+    }
     mapBoxes();
 }
 
