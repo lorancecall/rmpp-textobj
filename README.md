@@ -4,6 +4,8 @@
 you can move, resize, copy and erase like handwriting, and edit as text with a double tap. Runs without xovi and
 keeps working after a reboot.
 
+![Typed notes, then text objects added beside them: moved into place, highlighted, and edited with a double tap](docs/images/textobj-demo.gif)
+
 Made for and tested on the reMarkable Paper Pro with OS 3.29 only; other reMarkable models are not supported
 and their compatibility is not guaranteed. Following newer OS versions happens when I have time, and may not happen.
 
