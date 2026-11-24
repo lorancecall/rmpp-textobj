@@ -62,26 +62,7 @@ QList<InkPt> inkPoints(const QList<QPointF> &xy, quint16 width, const QList<quin
 
 // Add strokes (page coordinates) with the current pen. Returns the number added, -1 if Line is not as expected.
 // Converted text is drawn like a font: Fineliner (even width), black, thickness from the text size (em, page units).
-// A stroke with at least `want` points: midpoints are added on its longest segments (on the line: nothing changes on
-// the page). A one-point stroke gets a point a twentieth of a unit away.
-QList<QPointF> withPoints(QList<QPointF> s, int want) {
-    if (s.isEmpty()) return s;
-    if (s.size() == 1) s.append(s[0] + QPointF(0.05, 0));
-    while (s.size() < want) {
-        int best = 0;
-        double bl = -1;
-        for (int i = 0; i + 1 < s.size(); ++i) {
-            const QPointF d = s[i + 1] - s[i];
-            const double l = d.x() * d.x() + d.y() * d.y();
-            if (l > bl) { bl = l; best = i; }
-        }
-        if (bl <= 0) s.insert(best + 1, s[best] + QPointF(0.05, 0));
-        else s.insert(best + 1, (s[best] + s[best + 1]) / 2);
-    }
-    return s;
-}
-
-// words: per stroke, the speed words carrying the record (src/carry.h); the stroke gets points enough for them.
+// words: per stroke, the speed of each point (src/carry.h: the record they carry); none: speed 4.
 int addInkStrokes(QObject *sc, QObject *ph, const QList<QList<QPointF>> &strokes, double em, int weight = 1,
                   const QList<QList<quint16>> &words = {}) {
     Q_UNUSED(ph);
@@ -95,7 +76,7 @@ int addInkStrokes(QObject *sc, QObject *ph, const QList<QList<QPointF>> &strokes
     const double thick = qBound(1.5, em / divisor[qBound(0, weight, 2)], 9.0);
     for (int si = 0; si < strokes.size(); ++si) {
         const QList<quint16> sw = si < words.size() ? words[si] : QList<quint16>();
-        const QList<QPointF> s = sw.isEmpty() ? strokes[si] : withPoints(strokes[si], int(sw.size()));
+        const QList<QPointF> &s = strokes[si];
         void *line = type.create();
         auto *b = static_cast<char *>(line);
         *reinterpret_cast<int *>(b + 0x00) = tool;

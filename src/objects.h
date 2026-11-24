@@ -143,62 +143,69 @@ void updateRecords(const QJsonObject &add, const QStringList &remove) {
     g_records = out;
 }
 
-// The rect xochitl reports for a stroke: its points grown by half the pen width, out to whole units.
+// The rect xochitl reports for a stroke: its points grown by 1.5 times the pen width (the point width / 4), each edge
+// rounded (device, OS 3.29.1: Fineliner at width 2.25, a glyph stroke 92.81,238.04 13.75x20.92 -> 89,235 21x27, a dot
+// -> 7x7; within a unit for every stroke checked).
 QRect strokeRect(const QList<QPointF> &pts, double widthPx) {
-    QRectF f = pointsFrame({pts});
-    const double h = widthPx / 2;
-    return f.adjusted(-h, -h, h, h).toAlignedRect();
+    const QRectF f = pointsFrame({pts});
+    const double h = 1.5 * widthPx;
+    const int l = qRound(f.left() - h), t = qRound(f.top() - h), r = qRound(f.right() + h), b = qRound(f.bottom() + h);
+    return QRect(l, t, r - l, b - t);
 }
 
-// The objects whose records ride in a page file's strokes, as records of this page. A copy of an object (same id) is
-// read once: the copies are found by their strokes like the original.
+// The objects whose records ride in a page file's strokes, as records of this page. One record per object: its
+// copies (same id) are found by their strokes like the original.
 QList<QJsonObject> recordsFromStrokes(const QString &page, const QList<FileStroke> &all) {
-    struct Part { int idx, count, share; const FileStroke *s; QPointF c; };
+    struct Part { int idx; const FileStroke *s; QPointF c; };
     QHash<quint32, QList<Part>> by;
     for (const FileStroke &s : all) {
-        if (s.pts.size() < kCarryHead || (s.pts[0].speed & 0xf000) != kCarryTag) continue;
-        const quint32 id = quint32(s.pts[1].speed) | (quint32(s.pts[2].speed) << 16);
-        const int share = s.pts[4].speed;
-        if (s.pts.size() < kCarryHead + share) continue;
+        if (s.pts.size() < 2 || (s.pts[0].speed & 0xf000) != kCarryTag) continue;
         QRectF f;
         for (int i = 0; i < s.pts.size(); ++i) {
             const QPointF p(s.pts[i].x, s.pts[i].y);
             f = i ? f.united(QRectF(p, QSizeF(0, 0))) : QRectF(p, QSizeF(0, 0));
         }
-        by[id].append(Part{s.pts[0].speed & 0x0fff, s.pts[3].speed, share, &s, f.center()});
+        by[s.pts.last().speed].append(Part{s.pts[0].speed & 0x0fff, &s, f.center()});
     }
     QList<QJsonObject> out;
     int partial = 0, bad = 0, turned = 0;
     for (auto it = by.cbegin(); it != by.cend(); ++it) {
         const QList<Part> &parts = it.value();
+        int maxIdx = 0;
+        for (const Part &p : parts) maxIdx = qMax(maxIdx, p.idx);
         bool done = false, complete = false, read = false;
         Carried c;
         for (const Part &anchor : parts) {   // each copy's first stroke: the strokes nearest to it make that copy
-            if (done || anchor.idx != 0 || anchor.count <= 0) continue;
-            QList<const Part *> pick(anchor.count, nullptr);
+            if (done || anchor.idx != 0) continue;
+            QList<const Part *> pick(maxIdx + 1, nullptr);
             for (const Part &p : parts) {
-                if (p.count != anchor.count || p.share != anchor.share || p.idx >= anchor.count) continue;
                 const Part *&q = pick[p.idx];
                 const QPointF d = p.c - anchor.c, e = q ? q->c - anchor.c : QPointF();
                 if (!q || d.x() * d.x() + d.y() * d.y() < e.x() * e.x() + e.y() * e.y()) q = &p;
             }
+            pick[0] = &anchor;
+            const auto &a0 = anchor.s->pts;
+            const int count = a0.size() > 2 ? a0[1].speed : 0;
+            if (count <= 0 || count > pick.size()) continue;
+            pick.resize(count);
             if (pick.contains(nullptr)) continue;
             complete = true;
             QList<QList<QPointF>> strokes;
             QList<QRect> rects;
             QList<quint16> stream;
             for (const Part *p : pick) {
-                for (int k = 0; k < p->share; ++k) stream << p->s->pts[kCarryHead + k].speed;
+                const auto &ps = p->s->pts;
+                for (int k = 1; k + 1 < ps.size(); ++k) stream << ps[k].speed;
                 QList<QPointF> pts;
                 double w = 0;
-                for (const InkPt &q : p->s->pts) { pts << QPointF(q.x, q.y); w = qMax(w, q.width / 4.0); }
+                for (const InkPt &q : ps) { pts << QPointF(q.x, q.y); w = qMax(w, q.width / 4.0); }
                 strokes << pts;
                 rects << strokeRect(pts, w);
             }
-            if (!read) {   // every copy carries the same bytes
+            if (!read) {   // every copy carries the same words
                 QByteArray bytes;
-                const int len = stream.isEmpty() ? -1 : stream[0];
-                for (int i = 1; i < stream.size() && bytes.size() < len; ++i) {
+                const int len = stream.size() > 1 ? stream[1] : -1;
+                for (int i = 2; i < stream.size() && bytes.size() < len; ++i) {
                     bytes.append(char(stream[i] & 0xff));
                     if (bytes.size() < len) bytes.append(char(stream[i] >> 8));
                 }

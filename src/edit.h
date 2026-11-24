@@ -316,7 +316,15 @@ void recordNew(QPointer<QObject> scp, const QString &page, const QString &text, 
                 }
                 if (best < 1e8) { (best == 0 ? same : off)++; worst = qMax(worst, best); }
             }
-            TLOG("rect check: %d same, %d off (worst %.0f) of %lld strokes", same, off, worst, (long long)pl.strokes.size());
+            TLOG("rect check: %d same, %d off (worst %.0f) of %lld strokes, pen %.2f", same, off, worst,
+                 (long long)pl.strokes.size(), w);
+            for (int si = 0; si < qMin<qsizetype>(4, pl.strokes.size()); ++si) {   // points' bounds against xochitl's rect
+                const QRectF f = pointsFrame({pl.strokes[si]});
+                for (const QRect &g : glyphs)
+                    if ((QRectF(g).center() - f.center()).manhattanLength() <= 4)
+                        TLOG("rect check: points %.2f,%.2f %.2fx%.2f, xochitl %d,%d %dx%d", f.x(), f.y(), f.width(),
+                             f.height(), g.x(), g.y(), g.width(), g.height());
+            }
         }
         TLOG("recorded: %d strokes, %lld highlight(s)", n, (long long)found.size());
         // the copies are taken from the selection: with others still being taken out of it, they came out one too
@@ -418,7 +426,8 @@ void putInkNow(QPointer<QObject> scp, QPointer<QObject> php, QPointer<QQuickItem
         const int bands = hls.isEmpty() ? 0 : addBands(scp, hls);
         Placed cp = pl;
         cp.carryId = newCarryId();
-        const QList<QList<quint16>> words = carryWords(cp.carryId, packRecord(text, cp), int(cp.strokes.size()));
+        makeCarryRoom(&cp.strokes, carryWordCount(int(packRecord(text, cp).size())));
+        const QList<QList<quint16>> words = carrySpeeds(cp.carryId, packRecord(text, cp), cp.strokes);
         if (words.isEmpty())
             TLOG("new ink: %lld strokes cannot carry the record (over 4095): an object until xochitl restarts",
                  (long long)cp.strokes.size());

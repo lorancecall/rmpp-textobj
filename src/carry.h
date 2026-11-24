@@ -7,26 +7,25 @@
 // strokes. Nothing is written next to the notebook (an unknown file in a document folder stops its sync: the cloud
 // rejects it) and no record file is kept on the tablet.
 //
-// Per stroke (points are added on the stroke's own segments where it has too few; nothing visible changes):
-//   point 0: 0xA000 | stroke index (12 bits)     point 1, 2: object id (low, high 16 bits)
-//   point 3: stroke count                        point 4: share (payload words in each stroke)
-//   points 5 .. 5 + share - 1: the payload words of this stroke (stroke i holds words i * share ..)
-//   other points: speed 4 (what a converted stroke had before)
+// Per stroke: point 0: 0xA000 | stroke index (12 bits); last point: the object id (16 bits); the points between hold
+// the record's words in order, stroke after stroke (stroke 0's first, then stroke 1's ...; words past the end are 0).
+// xochitl drops points that lie exactly on the line between their neighbours (device: midpoints added to two-point
+// strokes were gone, their neighbours kept with their values), so where the glyphs' own inner points are too few,
+// points are added a quarter unit off the segment's line (a pen is two units wide or more: nothing visible).
 // Highlights are not carried: they live in the session's record only (after a restart the bands on an object are
 // taken as marks drawn over it).
-// Payload words: the byte count, then the bytes (little endian pairs):
+// Words: the stroke count, the byte count, then the bytes (little endian pairs):
 //   u8 version (1), u8 weight, f32 em, f32 frame width, f32 frame height, f32 ox, f32 oy,
 //   u16 text bytes + UTF-8, u16 line count, per line: u16 bytes + UTF-8, f32 x, f32 y, f32 em, then u16 CRC-16.
 // The frame is the union of the strokes' points (no pen width); ox, oy and the lines are relative to its top-left.
 // A copy drawn at another size scales them by its frame's width.
 
 constexpr quint16 kCarryTag = 0xA000;
-constexpr int kCarryHead = 5;
 constexpr int kCarryMaxStrokes = 0x0fff;
 
 quint32 newCarryId() {
     static quint32 seq = 0;
-    quint32 v = quint32(QDateTime::currentMSecsSinceEpoch()) * 2654435761u + (++seq) * 40503u;
+    const quint32 v = (quint32(QDateTime::currentMSecsSinceEpoch()) * 2654435761u + (++seq) * 40503u) >> 16;
     return v ? v : 1;
 }
 
@@ -142,23 +141,76 @@ bool unpackRecord(const QByteArray &b, Carried *out) {
     return r.ok && out->em > 0 && !out->text.isEmpty();
 }
 
-// The speed words of each stroke (head + its share of the payload); empty when the object cannot carry its record.
-QList<QList<quint16>> carryWords(quint32 id, const QByteArray &payload, int strokes) {
+// Words the record needs: stroke count, byte count, the bytes.
+int carryWordCount(int bytes) { return 2 + (bytes + 1) / 2; }
+
+// Room for `words` words between the strokes' first and last points: points are added on the longest segments, a
+// quarter unit off their line (on alternate sides), so that xochitl keeps them. One-point strokes get a second point.
+void makeCarryRoom(QList<QList<QPointF>> *strokes, int words) {
+    int room = 0;
+    for (QList<QPointF> &s : *strokes) {
+        if (s.size() == 1) s.append(s[0] + QPointF(0.3, 0.3));
+        room += qMax(0, int(s.size()) - 2);
+    }
+    int side = 1;
+    // stroke 0 holds the stroke count where the reader looks first: two inner points at least
+    while (!strokes->isEmpty() && (*strokes)[0].size() < 4) {
+        QList<QPointF> &s = (*strokes)[0];
+        int bi = 0;
+        double bl = -1;
+        for (int i = 0; i + 1 < s.size(); ++i) {
+            const QPointF d = s[i + 1] - s[i];
+            if (d.x() * d.x() + d.y() * d.y() > bl) { bl = d.x() * d.x() + d.y() * d.y(); bi = i; }
+        }
+        const QPointF d = s[bi + 1] - s[bi];
+        const double l = std::sqrt(qMax(bl, 1e-9));
+        const QPointF nv = bl > 1e-6 ? QPointF(-d.y() / l, d.x() / l) : QPointF(0.7071, 0.7071);
+        s.insert(bi + 1, (s[bi] + s[bi + 1]) / 2 + nv * (0.25 * side));
+        side = -side;
+        ++room;
+    }
+    while (room < words) {
+        int bs = -1, bi = 0;
+        double bl = -1;
+        for (int si = 0; si < strokes->size(); ++si) {
+            const QList<QPointF> &s = (*strokes)[si];
+            for (int i = 0; i + 1 < s.size(); ++i) {
+                const QPointF d = s[i + 1] - s[i];
+                const double l = d.x() * d.x() + d.y() * d.y();
+                if (l > bl) { bl = l; bs = si; bi = i; }
+            }
+        }
+        if (bs < 0) return;
+        QList<QPointF> &s = (*strokes)[bs];
+        const QPointF d = s[bi + 1] - s[bi];
+        const double l = std::sqrt(qMax(bl, 1e-9));
+        const QPointF n = bl > 1e-6 ? QPointF(-d.y() / l, d.x() / l) : QPointF(0.7071, 0.7071);
+        s.insert(bi + 1, (s[bi] + s[bi + 1]) / 2 + n * (0.25 * side));
+        side = -side;
+        ++room;
+    }
+}
+
+// The speed of every point of every stroke: the head and tail marks and the record's words. Empty when the strokes
+// have no room (makeCarryRoom first) or are too many.
+QList<QList<quint16>> carrySpeeds(quint32 id, const QByteArray &payload, const QList<QList<QPointF>> &strokes) {
     QList<QList<quint16>> out;
-    if (strokes <= 0 || strokes > kCarryMaxStrokes || payload.size() > 0xffff) return out;
-    QList<quint16> stream;
-    stream << quint16(payload.size());
+    const int n = int(strokes.size());
+    if (n <= 0 || n > kCarryMaxStrokes || payload.size() > 0xffff) return out;
+    QList<quint16> stream{quint16(n), quint16(payload.size())};
     for (int i = 0; i < payload.size(); i += 2)
         stream << quint16(quint8(payload[i]) | (i + 1 < payload.size() ? quint8(payload[i + 1]) << 8 : 0));
-    const int share = int((stream.size() + strokes - 1) / strokes);
-    for (int s = 0; s < strokes; ++s) {
-        QList<quint16> w{quint16(kCarryTag | s), quint16(id & 0xffff), quint16(id >> 16), quint16(strokes), quint16(share)};
-        for (int k = 0; k < share; ++k) {
-            const int at = s * share + k;
-            w << (at < stream.size() ? stream[at] : quint16(0));
-        }
+    int at = 0;
+    for (int si = 0; si < n; ++si) {
+        const int m = int(strokes[si].size());
+        if (m < 2) return {};
+        QList<quint16> w(m, 0);
+        w[0] = quint16(kCarryTag | si);
+        w[m - 1] = quint16(id & 0xffff);
+        for (int k = 1; k + 1 < m; ++k) w[k] = at < stream.size() ? stream[at++] : quint16(0);
         out << w;
     }
+    if (at < stream.size()) return {};
     return out;
 }
 
@@ -232,7 +284,7 @@ bool readPageStrokes(const QByteArray &data, QList<FileStroke> *out) {
         FileStroke s;
         s.tool = int(tool);
         s.thickness = thick;
-        if (pts.left() < 14 * kCarryHead || (quint16(quint8(pts.b[8]) | (quint8(pts.b[9]) << 8)) & 0xf000) != kCarryTag)
+        if (pts.left() < 28 || (quint16(quint8(pts.b[8]) | (quint8(pts.b[9]) << 8)) & 0xf000) != kCarryTag)
             continue;   // not one of ours (point 0's speed has no tag)
         while (pts.left() >= 14) {
             InkPt q;
