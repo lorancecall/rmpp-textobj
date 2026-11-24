@@ -1,0 +1,21 @@
+# Highlight bands (#3, option B): a highlighter stroke over a text object becomes a straight band on the writing
+# layer, bound to the object; the eraser takes the band only.
+open
+object "Band test" 900 600
+expect-log "new ink: \d+ strokes"
+shot bands-1-object
+mark
+highlight 890 1060 600
+expect-log "highlight check: 1 new stroke\(s\) on layer \d+, highlighter 1, snap to text 1, 1 over objects"
+expect-log "highlight: \d+ band\(s\) on the writing layer, bound to 1 object"
+expect-log "layer \d+ redrawn"
+wait 1500
+# on the screen without opening the page again (between "and" and "test", under the letters' tops)
+expect-color 1000 610 green
+shot bands-2-band
+mark
+erase 880 1070 600
+expect-log "bands: a highlight erased"
+wait 1500
+expect-color 1000 610 white
+shot bands-3-erased

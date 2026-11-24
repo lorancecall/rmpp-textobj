@@ -728,8 +728,17 @@ void checkHighlights(QQuickItem *dv, QObject *sc, const QString &pageId, const Q
         if (snap)
             for (const QRect &r : po.rects)
                 if (newKeys.contains(rectKey(r)) && !isOwnBand(rectKey(r)) && overTextObjects(pageId, r)) over << r;
-        TLOG("highlight check: %lld new stroke(s) on layer %d, highlighter %d, snap to text %d, %lld over objects",
-             (long long)newKeys.size(), sc->property("currentLayer").toInt(), hl ? 1 : 0, snap ? 1 : 0, (long long)over.size());
+        QStringList seen;   // diagnosis: the strokes and the object boxes compared
+        if (snap && over.isEmpty()) {
+            for (const QRect &r : po.rects)
+                if (newKeys.contains(rectKey(r))) seen << QStringLiteral("stroke %1,%2 %3x%4%5").arg(r.x()).arg(r.y())
+                    .arg(r.width()).arg(r.height()).arg(isOwnBand(rectKey(r)) ? QStringLiteral(" (own band)") : QString());
+            for (const QRectF &b : textBoxesOf(pageId))
+                seen << QStringLiteral("box %1,%2 %3x%4").arg(b.x()).arg(b.y()).arg(b.width()).arg(b.height());
+        }
+        TLOG("highlight check: %lld new stroke(s) on layer %d, highlighter %d, snap to text %d, %lld over objects%s%s",
+             (long long)newKeys.size(), sc->property("currentLayer").toInt(), hl ? 1 : 0, snap ? 1 : 0, (long long)over.size(),
+             seen.isEmpty() ? "" : ": ", qPrintable(seen.join(QStringLiteral(", "))));
         if (!over.isEmpty()) { highlightToTextLayer(dv, sc, pageId, over, color, argb); return; }
     }
     if (po.found.isEmpty()) return;
@@ -834,7 +843,9 @@ void checkErasedObjects() {
     for (const QRect &r : rects) keys.insert(rectKey(r));
     const bool settled = keys == g_check.seen;
     g_check.seen = keys;
-    if (!settled || (g_check.once && keys == g_check.checked) || rects.isEmpty()) return;
+    // an empty layer is a state too: the first stroke drawn on an empty writing layer is new (it was never seen before
+    // the page had been checked once), and erasing the last band leaves the layer empty
+    if (!settled || (g_check.once && keys == g_check.checked)) return;
     QSet<QString> added;
     if (g_check.once) for (const QString &k : keys) if (!g_check.checked.contains(k)) added.insert(k);
     g_check.checked = keys;

@@ -845,6 +845,22 @@ QSet<QString> newRectKeys(QObject *sc, const QSet<QString> &before) {
     return out;
 }
 
+// Lines added with addDrawingLine to a layer that is not drawn on by the pen are in the page but not painted (the
+// layer's picture is kept; a full screen refresh does not redraw it; the page opened again does). Hiding the layer and
+// showing it again redraws it (as the eye button in the layers panel does); visibility is not an undo step.
+void repaintLayer(QObject *sc, int layer) {
+    bool shown = false;
+    if (!QMetaObject::invokeMethod(sc, "isLayerVisible", Qt::DirectConnection, Q_RETURN_ARG(bool, shown), Q_ARG(int, layer))
+        || !shown)
+        return;
+    QMetaObject::invokeMethod(sc, "setLayerVisible", Q_ARG(int, layer), Q_ARG(bool, false));
+    QPointer<QObject> scp(sc);
+    QTimer::singleShot(50, sc, [scp, layer] {
+        if (scp) QMetaObject::invokeMethod(scp, "setLayerVisible", Q_ARG(int, layer), Q_ARG(bool, true));
+        TLOG("layer %d redrawn", layer);
+    });
+}
+
 void highlightToTextLayer(QQuickItem *dv, QObject *sc, const QString &pageId, const QList<QRect> &strokes, int color,
                           uint argb) {
     const int t = textLayer(sc), w = sc->property("currentLayer").toInt();
@@ -862,11 +878,9 @@ void highlightToTextLayer(QQuickItem *dv, QObject *sc, const QString &pageId, co
     auto done = [scp, dvp, prevp, w](const char *why) {
         if (why) TLOG("highlight: %s", why);
         if (scp) setLayer(scp, w);
-        QTimer::singleShot(400, qApp, [prevp, dvp] {
+        QTimer::singleShot(400, qApp, [prevp, scp, w] {
             if (prevp) tapItem(prevp);
-            // bands added on the writing layer were not painted until the page was opened again (device): a full
-            // refresh shows them
-            if (dvp) { QMetaObject::invokeMethod(dvp, "updateAfterStroke"); fullRefreshLater(dvp, 0); }
+            if (scp) repaintLayer(scp, w);
             g_putting = false;
         });
     };
@@ -981,15 +995,15 @@ void followBands(QObject *sc, const QString &pageId) {
             const Rec &r = po.recs[best->rec];
             jobs << Job{i, bandRects(r.text, pageLines(r, *best), b.hl.a, b.hl.b), best->box};
         }
-        auto finish = [scp, orig, pageId](int steps) {
+        auto finish = [scp, orig, pageId, w](int steps) {
             if (scp) {
                 setLayer(scp, orig);
                 if (steps > 0) pushGroup(scp, pageId, steps + 1, true);   // with the move: one press
             }
-            QTimer::singleShot(400, qApp, [] {
+            QTimer::singleShot(400, qApp, [scp, w, steps] {
                 g_putting = false;
                 requestBoxes();
-                if (QQuickItem *dv = documentView()) fullRefreshLater(dv, 0);   // bands on the writing layer shown
+                if (scp && steps > 0) repaintLayer(scp, w);
             });
         };
         if (jobs.isEmpty()) { finish(0); return; }
