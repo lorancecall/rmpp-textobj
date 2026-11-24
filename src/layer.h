@@ -45,7 +45,13 @@ int writingLayer(QObject *sc) {
 }
 
 int g_ownLayerSwitch = 0;   // our own setCurrentLayer calls not yet seen applied
-void followBands(QObject *sc, const QString &pageId);   // below: bands follow their moved objects
+void followBands(QObject *sc, const QString &pageId, const QTransform &moveT = QTransform(),
+                 const QList<QRectF> &moved = {}, int tries = 0);   // below: bands follow their moved objects
+QTransform g_moveT;          // the move being made: its transform (page units)
+QList<QRectF> g_moveSel;     // and the selection's bounds before it
+QRectF g_selRect;            // the selection's bounds as it was made (before any move)
+void hideBandsForMove(QObject *sc, const QString &pageId);   // below
+void showBandsAgain(QObject *sc);
 // The Text objects layer was made current by the user (the layers panel), not by the add-on (a conversion putting its
 // ink there, a double tap going to an object). The dashed boxes show only then (developer: a box showed on a new
 // object and not on the others for a moment; the boxes are for working on that layer).
@@ -543,6 +549,11 @@ void watchLayers() {
         // a move committed or put back (the pending edit back to identity): the boxes are read again then, not at
         // the selection's end, which came before the commit (boxes left at the old place, device ab6e7ac9)
         if (s->property("pendingEdit").value<QTransform>().isIdentity()) { requestBoxes(); return; }
+        g_moveT = s->property("pendingEdit").value<QTransform>();
+        if (!g_moved) {
+            g_moveSel = g_selRect.isEmpty() ? QList<QRectF>{} : QList<QRectF>{g_selRect};
+            hideBandsForMove(s, p);
+        }
         g_moved = true;
         watchSelectionRelease();
         g_pushWait = true;
@@ -550,7 +561,16 @@ void watchLayers() {
         if (!selectionPressed()) QTimer::singleShot(0, qApp, [] { if (g_pushWait) pushWhenReleased(); });
     });
     hook(sc, "rootDocumentLengthChanged()", [] { if (!putting() && g_own == 0) groupsUnknown("typed text"); });
-    hook(sc, "selectionItemCountChanged()", [] { requestBoxes(); });
+    hook(sc, "selectionItemCountChanged()", [] {
+        requestBoxes();
+        // the selection's bounds before it is moved: the objects whose bands follow the move (followBands)
+        QString p;
+        QObject *s = pageScene(&p);
+        if (!s || g_moved) return;
+        QRect u;
+        for (const QRect &r : lineRects(s)) u |= r;
+        g_selRect = QRectF(u);
+    });
     hook(sc, "selectionCleared()", [] {
         requestBoxes();
         if (g_moved) {
@@ -560,7 +580,9 @@ void watchLayers() {
             if (s && g_own == 0) {
                 TLOG("a move or resize: one step");
                 pushGroup(s, p, 1, false);
-                QTimer::singleShot(900, qApp, [] { QString pg; if (QObject *s2 = pageScene(&pg)) followBands(s2, pg); });
+                const QTransform mt = g_moveT;
+                const QList<QRectF> ms = g_moveSel;
+                QTimer::singleShot(250, qApp, [mt, ms] { QString pg; if (QObject *s2 = pageScene(&pg)) followBands(s2, pg, mt, ms); });
             }
         }
         QTimer::singleShot(700, qApp, [] { QString p; if (QObject *s = pageScene(&p)) readTextBoxes(s); });
@@ -845,6 +867,46 @@ bool isOwnBand(const QString &key) {
     return false;
 }
 
+// While objects with bands are dragged, the writing layer (the bands are on it) is hidden until the bands are drawn
+// at the new place (developer, 2026-11-24: the bands stayed behind during the drag and jumped after it; hidden, the
+// highlight just comes back with the object). Not an undo step. A fail-safe shows it again if the follow never ends.
+int g_bandsHidden = -1;
+QElapsedTimer g_bandsHiddenAt;
+void showBandsAgain(QObject *sc) {
+    if (g_bandsHidden < 0 || !sc) return;
+    const int l = g_bandsHidden;
+    g_bandsHidden = -1;
+    QMetaObject::invokeMethod(sc, "setLayerVisible", Q_ARG(int, l), Q_ARG(bool, true));
+    TLOG("bands: layer %d shown again after %lld ms", l + 1, (long long)g_bandsHiddenAt.elapsed());
+}
+void hideBandsForMove(QObject *sc, const QString &pageId) {
+    if (g_bandsHidden >= 0 || g_selRect.isEmpty()) return;
+    const int w = writingLayer(sc);
+    if (w < 0) return;
+    bool any = false;
+    for (const BandSet &b : g_bandSets) {
+        if (b.page != pageId) continue;
+        const QRectF on = g_selRect.adjusted(-4, -4, 4, 4).intersected(b.box);
+        if (on.width() * on.height() >= 0.7 * b.box.width() * b.box.height()) any = true;
+    }
+    bool shown = false;
+    if (!any || !QMetaObject::invokeMethod(sc, "isLayerVisible", Qt::DirectConnection, Q_RETURN_ARG(bool, shown), Q_ARG(int, w))
+        || !shown) return;
+    QMetaObject::invokeMethod(sc, "setLayerVisible", Q_ARG(int, w), Q_ARG(bool, false));
+    g_bandsHidden = w;
+    g_bandsHiddenAt.start();
+    TLOG("bands: layer %d hidden during the move", w + 1);
+    QPointer<QObject> scp(sc);
+    auto check = std::make_shared<std::function<void()>>();
+    *check = [scp, check] {
+        if (!scp || g_bandsHidden < 0) return;
+        if (g_bandsHiddenAt.elapsed() > 2500 && !g_moved && !putting()) { showBandsAgain(scp); return; }
+        if (g_bandsHiddenAt.elapsed() > 20000) { showBandsAgain(scp); return; }
+        QTimer::singleShot(500, qApp, [check] { (*check)(); });
+    };
+    QTimer::singleShot(500, qApp, [check] { (*check)(); });
+}
+
 // Rect keys of the strokes on the current layer that were not in before.
 QSet<QString> newRectKeys(QObject *sc, const QSet<QString> &before) {
     QSet<QString> out;
@@ -985,25 +1047,156 @@ void highlightToTextLayer(QQuickItem *dv, QObject *sc, const QString &pageId, co
     });
 }
 
-// After objects on the Text objects layer moved or were resized (their layer current, nothing selected): the bands
-// of each are drawn again over the same characters at the new place, on the writing layer. Joins the move's undo
-// group. Bands whose strokes are all gone (erased) are dropped.
-void followBands(QObject *sc, const QString &pageId) {
-    if (g_bandSets.isEmpty() || putting() || g_edit.box) return;
+// Bands to draw again: band set `set` at `bands` (page units), its object now at `box`.
+struct BandJob { int set; QList<QRectF> bands; QRectF box; };
+
+// The old bands of each job deleted and new ones drawn, on the writing layer w; then layer orig current again. Joins
+// the move's undo group. Kept short (developer: the bands came ~3 s after the object): no fixed waits where a state
+// can be checked.
+void runBandJobs(QPointer<QObject> scp, const QString &pageId, const QList<BandJob> &jobs, int orig, int w) {
+    QElapsedTimer took;
+    took.start();
+    auto finish = [scp, orig, pageId, w, took](int steps) {
+        if (scp) {
+            setLayer(scp, orig);
+            if (steps > 0) pushGroup(scp, pageId, steps + 1, true);   // with the move: one press
+            TLOG("bands: followed in %lld ms", (long long)took.elapsed());
+        }
+        QTimer::singleShot(100, qApp, [scp, w, steps] {
+            g_putting = false;
+            requestBoxes();
+            if (scp && g_bandsHidden >= 0) showBandsAgain(scp);   // shown again: drawn with the new bands
+            else if (scp && steps > 0) repaintLayer(scp, w);
+        });
+    };
+    auto steps = std::make_shared<int>(0);
+    auto run = std::make_shared<std::function<void(int)>>();
+    *run = [scp, jobs, steps, run, w, finish](int j) {
+        if (!scp) { g_putting = false; return; }
+        if (j >= jobs.size()) { finish(*steps); return; }
+        const BandJob job = jobs[j];
+        if (job.set >= g_bandSets.size()) { (*run)(j + 1); return; }
+        const QList<QRect> rects = pageLineRects(scp);
+        QList<int> want;
+        for (int i = 0; i < rects.size(); ++i) if (g_bandSets[job.set].keys.contains(rectKey(rects[i]))) want << i;
+        auto draw = [scp, job, steps, run, j](bool deleted) {
+            if (!scp) { g_putting = false; return; }
+            if (deleted) ++*steps;
+            QSet<QString> was;
+            for (const QRect &r : pageLineRects(scp)) was.insert(rectKey(r));
+            Hl h = g_bandSets[job.set].hl;
+            h.rects = job.bands;
+            const int n = addBands(scp, {h});
+            if (n > 0) *steps += n;
+            QTimer::singleShot(250, scp, [scp, job, was, run, j] {
+                if (!scp) { g_putting = false; return; }
+                if (job.set < g_bandSets.size()) {
+                    BandSet &b = g_bandSets[job.set];
+                    b.keys = newRectKeys(scp, was);
+                    b.box = job.box;
+                    b.hl.rects = job.bands;
+                }
+                (*run)(j + 1);
+            });
+        };
+        if (want.isEmpty()) { TLOG("bands: none left to move (erased): drawn again"); draw(false); return; }
+        const bool switched = !selectionToolActive() && useSelectionTool();
+        QTimer::singleShot(switched ? 300 : 0, scp, [scp, rects, want, draw, w] {
+            if (!scp) { g_putting = false; return; }
+            setSelection(scp, rects, want, [scp, rects, want, draw, w] {
+                if (!scp) { g_putting = false; return; }
+                if (scp->property("selectionItemCount").toInt() != want.size()) {
+                    TLOG("bands: the old bands could not be selected alone: left, new ones drawn");
+                    endSelection(scp, nullptr);
+                    draw(false);
+                    return;
+                }
+                // checked, once more if it stayed (device 2026-11-24: the old band was left selected in its place);
+                // whether it went is read from the page and the selection (selectionItemCount stayed 1 after it)
+                QSet<QString> old;
+                for (int i : want) old.insert(rectKey(rects[i]));
+                auto del = std::make_shared<std::function<void(int)>>();
+                *del = [scp, draw, w, del, old](int tries) {
+                    if (!scp) { g_putting = false; return; }
+                    const int cur = scp->property("currentLayer").toInt();   // the layer the selection is on
+                    if (cur != w) TLOG("bands: deleting on layer %d, the writing layer is %d", cur + 1, w + 1);
+                    QMetaObject::invokeMethod(scp, "deleteSelectedItems", Qt::DirectConnection, Q_ARG(int, cur));
+                    QTimer::singleShot(200, scp, [scp, draw, del, tries, old] {
+                        if (!scp) { g_putting = false; return; }
+                        int left = 0;
+                        for (const QRect &r : lineRects(scp)) if (old.contains(rectKey(r))) ++left;
+                        for (const QRect &r : pageLineRects(scp)) if (old.contains(rectKey(r))) ++left;
+                        if (left > 0 && tries < 1) { TLOG("bands: the old band still selected (%d): deleting again", left); (*del)(tries + 1); return; }
+                        if (left > 0) { TLOG("bands: the old band could not be deleted (%d selected)", left); endSelection(scp, nullptr); }
+                        // the selection frame stayed drawn on the deleted band (gone once the page was opened again,
+                        // device 2026-11-24): the selection is ended
+                        else QMetaObject::invokeMethod(scp, "clearSelectedItems", Qt::DirectConnection);
+                        draw(left == 0);
+                    });
+                };
+                QTimer::singleShot(100, scp, [del] { (*del)(0); });
+            });
+        });
+    };
+    // on the writing layer, as soon as it is current
+    if (scp->property("currentLayer").toInt() == w) { (*run)(0); return; }
+    setLayer(scp, w);
+    waitFor(scp, [scp, w] { return scp->property("currentLayer").toInt() == w; }, [run](bool) { (*run)(0); }, 0);
+}
+
+// After objects on the Text objects layer moved or were resized (nothing selected): the bands of each are drawn again
+// over the same characters at the new place, on the writing layer. Bands whose strokes are all gone (erased) are
+// dropped. moveT and moved (the move's transform and the selection's bounds before it, page units): the new
+// bands are the old ones moved by it, with no need to read the objects on their layer; otherwise (or when no band set
+// matches) the objects are read on the Text objects layer.
+void followBands(QObject *sc, const QString &pageId, const QTransform &moveT, const QList<QRectF> &moved, int tries) {
+    if (g_bandSets.isEmpty()) return;
     bool any = false;
     for (const BandSet &b : g_bandSets) if (b.page == pageId) { any = true; break; }
-    if (!any) return;
+    if (!any) { TLOG("bands: none on this page to follow (%lld bound)", (long long)g_bandSets.size()); return; }
+    if (g_edit.box) { TLOG("bands: not followed (edit box open)"); return; }
     const int t = textLayer(sc), w = writingLayer(sc), orig = sc->property("currentLayer").toInt();
-    if (t < 0 || w < 0 || sc->property("selectionItemCount").toInt() > 0) return;
+    if (t < 0 || w < 0) return;
+    if (tries == 0) TLOG("bands: following a move (%lld box(es) moved, transform %d)", (long long)moved.size(), moveT.isIdentity() ? 0 : 1);
+    // a tap off the object ends the selection and then makes the writing layer current: once that is done
+    if (putting() || tapSequence() || sc->property("selectionItemCount").toInt() > 0) {
+        if (tries >= 15) { TLOG("bands: not followed (busy: putting %d, selected %d)", putting() ? 1 : 0, sc->property("selectionItemCount").toInt()); return; }
+        QPointer<QObject> scp(sc);
+        QTimer::singleShot(200, qApp, [scp, pageId, moveT, moved, tries] { if (scp) followBands(scp, pageId, moveT, moved, tries + 1); });
+        return;
+    }
+    QPointer<QObject> scp(sc);
+    if (!moveT.isIdentity() && !moved.isEmpty()) {
+        QList<BandJob> jobs;
+        for (int i = 0; i < g_bandSets.size(); ++i) {
+            const BandSet &b = g_bandSets[i];
+            if (b.page != pageId || b.hl.rects.isEmpty()) continue;
+            bool hit = false;   // the object (its box when the bands were drawn) was in the moved selection
+            for (const QRectF &m : moved) {
+                const QRectF on = m.adjusted(-4, -4, 4, 4).intersected(b.box);
+                if (on.width() * on.height() >= 0.7 * b.box.width() * b.box.height()) hit = true;
+            }
+            if (!hit) continue;
+            QList<QRectF> bands;
+            for (const QRectF &r : b.hl.rects) bands << moveT.mapRect(r);
+            jobs << BandJob{i, bands, moveT.mapRect(b.box)};
+        }
+        if (!jobs.isEmpty()) {
+            TLOG("bands: %lld object(s) moved: their bands follow (moved by the move)", (long long)jobs.size());
+            g_putting = true;
+            g_putStarted.start();
+            runBandJobs(scp, pageId, jobs, orig, w);
+            return;
+        }
+    }
     g_putting = true;
     g_putStarted.start();
-    QPointer<QObject> scp(sc);
     setLayer(sc, t);   // the objects are read on their layer (the move may have ended back on the writing layer)
-    QTimer::singleShot(orig == t ? 0 : 500, sc, [scp, pageId, t, w, orig] {
+    // (a while after the move: read at once, the objects were still at the old place)
+    QTimer::singleShot(orig == t ? 600 : 900, sc, [scp, pageId, t, w, orig] {
         if (!scp) { g_putting = false; return; }
         const PageObjects po = findObjects(scp, pageId, true);
-        struct Job { int set; QList<QRectF> bands; QRectF box; };
-        QList<Job> jobs;
+        QList<BandJob> jobs;
         for (int i = 0; i < g_bandSets.size(); ++i) {
             const BandSet &b = g_bandSets[i];
             if (b.page != pageId) continue;
@@ -1017,94 +1210,15 @@ void followBands(QObject *sc, const QString &pageId) {
             }
             if (!best || sameBox(best->box, b.box)) continue;
             const Rec &r = po.recs[best->rec];
-            jobs << Job{i, bandRects(r.text, pageLines(r, *best), b.hl.a, b.hl.b), best->box};
+            jobs << BandJob{i, bandRects(r.text, pageLines(r, *best), b.hl.a, b.hl.b), best->box};
         }
-        auto finish = [scp, orig, pageId, w](int steps) {
-            if (scp) {
-                setLayer(scp, orig);
-                if (steps > 0) pushGroup(scp, pageId, steps + 1, true);   // with the move: one press
-            }
-            QTimer::singleShot(400, qApp, [scp, w, steps] {
-                g_putting = false;
-                requestBoxes();
-                if (scp && steps > 0) repaintLayer(scp, w);
-            });
-        };
-        if (jobs.isEmpty()) { finish(0); return; }
+        if (jobs.isEmpty()) {
+            setLayer(scp, orig);
+            QTimer::singleShot(100, qApp, [scp] { g_putting = false; requestBoxes(); showBandsAgain(scp); });
+            return;
+        }
         TLOG("bands: %lld object(s) moved: their bands follow", (long long)jobs.size());
-        setLayer(scp, w);
-        auto steps = std::make_shared<int>(0);
-        auto run = std::make_shared<std::function<void(int)>>();
-        *run = [scp, jobs, steps, run, w, finish](int j) {
-            if (!scp) { g_putting = false; return; }
-            if (j >= jobs.size()) { finish(*steps); return; }
-            const Job job = jobs[j];
-            if (job.set >= g_bandSets.size()) { (*run)(j + 1); return; }
-            const QList<QRect> rects = pageLineRects(scp);
-            QList<int> want;
-            for (int i = 0; i < rects.size(); ++i) if (g_bandSets[job.set].keys.contains(rectKey(rects[i]))) want << i;
-            auto draw = [scp, job, steps, run, j](bool deleted) {
-                if (!scp) { g_putting = false; return; }
-                if (deleted) ++*steps;
-                QSet<QString> was;
-                for (const QRect &r : pageLineRects(scp)) was.insert(rectKey(r));
-                Hl h = g_bandSets[job.set].hl;
-                h.rects = job.bands;
-                const int n = addBands(scp, {h});
-                if (n > 0) *steps += n;
-                QTimer::singleShot(500, scp, [scp, job, was, run, j] {
-                    if (!scp) { g_putting = false; return; }
-                    if (job.set < g_bandSets.size()) {
-                        BandSet &b = g_bandSets[job.set];
-                        b.keys = newRectKeys(scp, was);
-                        b.box = job.box;
-                    }
-                    (*run)(j + 1);
-                });
-            };
-            if (want.isEmpty()) { TLOG("bands: none left to move (erased): drawn again"); draw(false); return; }
-            useSelectionTool();
-            QTimer::singleShot(300, scp, [scp, rects, want, draw, w] {
-                if (!scp) { g_putting = false; return; }
-                setSelection(scp, rects, want, [scp, rects, want, draw, w] {
-                    if (!scp) { g_putting = false; return; }
-                    if (scp->property("selectionItemCount").toInt() != want.size()) {
-                        TLOG("bands: the old bands could not be selected alone: left, new ones drawn");
-                        endSelection(scp, nullptr);
-                        draw(false);
-                        return;
-                    }
-                    // a moment after the selection settles; checked, once more if it stayed (device 2026-11-24: the old
-                    // band was left selected in its place, next to the new one)
-                    // (whether it went is read from the page: selectionItemCount stayed 1 after the delete)
-                    QSet<QString> old;
-                    for (int i : want) old.insert(rectKey(rects[i]));
-                    auto del = std::make_shared<std::function<void(int)>>();
-                    *del = [scp, draw, w, del, old](int tries) {
-                        if (!scp) { g_putting = false; return; }
-                        // on the layer the selection is on (the current one; w was not always current by now)
-                        const int cur = scp->property("currentLayer").toInt();
-                        if (cur != w) TLOG("bands: deleting on layer %d, the writing layer is %d", cur + 1, w + 1);
-                        QMetaObject::invokeMethod(scp, "deleteSelectedItems", Qt::DirectConnection, Q_ARG(int, cur));
-                        QTimer::singleShot(400, scp, [scp, draw, del, tries, old] {
-                            if (!scp) { g_putting = false; return; }
-                            // still selected (selected strokes are not in pageLineRects) or still on the page
-                            int left = 0;
-                            for (const QRect &r : lineRects(scp)) if (old.contains(rectKey(r))) ++left;
-                            for (const QRect &r : pageLineRects(scp)) if (old.contains(rectKey(r))) ++left;
-                            if (left > 0 && tries < 1) { TLOG("bands: the old band still selected (%d): deleting again", left); (*del)(tries + 1); return; }
-                            if (left > 0) { TLOG("bands: the old band could not be deleted (%d selected)", left); endSelection(scp, nullptr); }
-                            // the selection frame stayed drawn on the deleted band (selectionItemCount 1; gone once the
-                            // page was opened again: device 2026-11-24): the selection is ended
-                            else QMetaObject::invokeMethod(scp, "clearSelectedItems", Qt::DirectConnection);
-                            draw(left == 0);
-                        });
-                    };
-                    QTimer::singleShot(300, scp, [del] { (*del)(0); });
-                });
-            });
-        };
-        QTimer::singleShot(500, scp, [run] { (*run)(0); });
+        runBandJobs(scp, pageId, jobs, orig, w);
     });
 }
 

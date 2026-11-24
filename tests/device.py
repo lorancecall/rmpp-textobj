@@ -142,11 +142,18 @@ def step_tool(name):
 
 
 def step_object(text, x, y):
-    step_tool("text")
-    ctl("tap", 296, 504)          # the tool's option: a text object
-    wait(1500)
-    ctl("tap", x, y)
-    wait(2500)
+    # once more if the add did not start: the first taps after a notebook opened were sometimes not taken
+    # (device 2026-11-24: the pen stayed on)
+    for attempt in range(2):
+        since = device_now()
+        step_tool("text")
+        ctl("tap", 296, 504)          # the tool's option: a text object
+        wait(1500)
+        ctl("tap", x, y)
+        wait(2500)
+        if any("add text object at view" in l for l in log_since(since)):
+            break
+        print("  (add text object did not start: again)", flush=True)
     ctl("text", text)
     wait(1500)
     ctl("tap", 1470, 766)         # convert

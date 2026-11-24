@@ -72,8 +72,29 @@ void setSelection(QPointer<QObject> scp, const QList<QRect> &rects, const QList<
         }
         subtractRects(scp, sub, 0, [finish, out, kept] { finish(out, kept); });
     };
-    QTimer::singleShot(350, scp, [scp, wr, strokePass] {
+    // the rect took exactly the wanted strokes (a band alone in its place): done as soon as that is seen (the fixed
+    // waits below made a band follow its object ~1.4 s later, developer 2026-11-24)
+    auto taken = std::make_shared<bool>(false);   // one of the two ways goes on, never both
+    auto exact = std::make_shared<std::function<void(int)>>();
+    *exact = [scp, wantKeys, done, exact, taken](int tries) {
         if (!scp) { g_adjusting = false; return; }
+        if (*taken) return;
+        QSet<QString> got;
+        for (const QRect &r : scp->property("selectionItemCount").toInt() > 0 ? lineRects(scp) : QList<QRect>{}) got.insert(rectKey(r));
+        if (got == wantKeys) {
+            *taken = true;
+            TLOG("selection set: %lld strokes at once", (long long)got.size());
+            if (done) done();
+            QTimer::singleShot(200, qApp, [] { g_adjusting = false; });
+            return;
+        }
+        if (tries < 5) QTimer::singleShot(50, scp, [exact, tries] { (*exact)(tries + 1); });
+    };
+    QTimer::singleShot(50, scp, [exact] { (*exact)(0); });
+    QTimer::singleShot(350, scp, [scp, wr, strokePass, taken] {
+        if (!scp) { g_adjusting = false; return; }
+        if (*taken) return;   // done above
+        *taken = true;
         if (wr.size() != 1) { strokePass(); return; }
         const QRect w = wr.first();
         const QList<QRect> strips = {w.adjusted(-1, 2, 1, 1), w.adjusted(-1, -1, 1, -2), w.adjusted(2, -1, 1, 1),

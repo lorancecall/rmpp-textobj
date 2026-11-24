@@ -18,6 +18,9 @@ tap 1300 1700
 expect-log "move on the text layer"
 expect-log "a move or resize: one step"
 expect-log "bands: 1 object\(s\) moved: their bands follow"
+# hidden while dragged, shown again with the bands at the new place
+expect-log "bands: layer \d+ hidden during the move"
+expect-log "bands: layer \d+ shown again"
 wait 2500
 # the object and its band in the new place, nothing left in the old one
 expect-ink 895 1530 1060 1660
