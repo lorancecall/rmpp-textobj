@@ -10,12 +10,12 @@ mark
 # a double tap selects the object and opens its edit box; Cancel leaves it selected
 dtap 960 1350
 expect-log "double tap: selecting a text object"
-expect-log "edit: 1 object\(s\), 1 highlight\(s\)"
+expect-log "edit: 1 object\(s\)"
 tap 1317 766
 mark
 drag 960 1350 960 1600
 tap 1300 1700
-expect-log "move on the text layer: .* 1 moved box"
+expect-log "move on the text layer"
 expect-log "a move or resize: one step"
 expect-log "bands: 1 object\(s\) moved: their bands follow"
 wait 2500

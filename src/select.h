@@ -496,7 +496,9 @@ void doubleTapNow(double x, double y, bool onText = false, bool edit = true) {
         bool only = false;
         const QList<Placement> objs = selectedObjects(po, sel, &only);
         for (const Placement &p : objs)   // selected with nothing but objects and their marks: edit
-            if (p.rec == hit->rec && p.d == hit->d && only) { if (edit) editSelectedObjects(); return; }
+            // now: the single tap that came first (on the Text objects layer) selected it a moment ago and set the
+            // double tap clock, which would take this double tap for a repeat (device 2026-11-24: no edit box there)
+            if (p.rec == hit->rec && p.d == hit->d && only) { if (edit) editSelectedObjects(true); return; }
     }
     // not selected, or selected with other handwriting: select this object alone
     g_lastDoubleTap.start();

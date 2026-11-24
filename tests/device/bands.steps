@@ -12,6 +12,9 @@ expect-log "layer \d+ redrawn"
 wait 1500
 # on the screen without opening the page again (between "and" and "test", under the letters' tops)
 expect-color 1000 610 green
+# end to end: the first and the last letter covered too
+expect-ink 902 600 914 620 green
+expect-ink 1034 600 1046 620 green
 shot bands-2-band
 mark
 erase 880 1070 600

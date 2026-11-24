@@ -187,7 +187,10 @@ bool sameBand(const QRect &q, const QRectF &e, double k) {
     const QPointF c = centre(q), ce = e.center();
     const double tol = qMax(kPosTol + 1, 0.12 * e.height());
     if (qMax(qAbs(c.x() - ce.x()), qAbs(c.y() - ce.y())) > tol) return false;
-    if (qAbs(q.width() - e.width()) > qMax(4.0, 0.12 * e.width()) + e.height() * qAbs(1 - 1 / k)) return false;
+    // as wide as e, or wider by its own height: a band runs the whole width of e, and xochitl's rect counts round ends
+    // half the stroke width beyond the end points (the highlighter paints flat ends, addBands)
+    const double tolW = qMax(4.0, 0.12 * e.width()) + e.height() * qAbs(1 - 1 / k), dw = q.width() - e.width();
+    if (qAbs(dw) > tolW && qAbs(dw - q.height()) > tolW) return false;
     const double h0 = qMin(e.height(), e.height() / k), h1 = qMax(e.height(), e.height() / k);
     return q.height() >= 0.7 * h0 - 3 && q.height() <= 1.3 * h1 + 3;
 }
@@ -215,8 +218,8 @@ bool isHighlightStroke(const PageObjects &po, const Placement &p, int i) {
 }
 
 // ---- drawing bands ----
-// Each band rect as one straight highlighter stroke through its middle, as thick as the band, from half the thickness
-// inside each end (its ink then fills the rect). Returns the number drawn, -1 if Line is not as expected.
+// Each band rect as one straight highlighter stroke through its middle, as thick as the band, from its left
+// end to its right end (its ink then fills the rect). Returns the number drawn, -1 if Line is not as expected.
 int addBands(QObject *sc, const QList<Hl> &hls) {
     const int add = sc->metaObject()->indexOfMethod("addDrawingLine(Line)");
     const QMetaType type = add >= 0 ? sc->metaObject()->method(add).parameterMetaType(0) : QMetaType();
@@ -226,8 +229,9 @@ int addBands(QObject *sc, const QList<Hl> &hls) {
         for (const QRectF &r : h.rects) {
             const double w = r.height();
             const double y = r.center().y();
-            double x0 = r.left() + w / 2, x1 = r.right() - w / 2;
-            if (x1 < x0) x0 = x1 = r.center().x();
+            // end to end: the highlighter paints flat ends at the end points (device 2026-11-24: drawn from half the
+            // width inside each end, the band left the first and last characters half bare)
+            const double x0 = r.left(), x1 = r.right();
             QList<InkPt> pts;
             const int np = 12;
             for (int i = 0; i < np; ++i) {

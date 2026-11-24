@@ -150,7 +150,7 @@ def step_object(text, x, y):
     ctl("text", text)
     wait(1500)
     ctl("tap", 1470, 766)         # convert
-    wait(6000)
+    wait(9000)                    # a tap while the object is being put is ignored
     ctl("tap", 1300, 1700)        # off the object: writing again
     wait(2000)
 

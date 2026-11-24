@@ -436,17 +436,21 @@ void watchSelectionRelease() {
 // ---- switching ----
 // To the Text objects layer for a double tap (select.h), or back to the writing layer when another tool is chosen
 // there: one undo group with the step next to it.
-void switchLayer(QObject *sc, int to) {
+// stepBefore: a step was just made (undoAvailable may not say so yet: calls take effect a moment later; device
+// 2026-11-24: a conversion's switch counted alone, and one undo press took the switch only)
+void switchLayerWith(QObject *sc, int to, bool stepBefore) {
     QQuickItem *dv = documentView();
     const QString page = dv ? dv->property("currentPageId").toString() : QString();
-    const bool before = sc->property("undoAvailable").toBool();
+    const bool before = stepBefore || sc->property("undoAvailable").toBool();
+    const QString sig = pageSig(sc);
     setLayer(sc, to);
     QPointer<QObject> scp(sc);
-    waitFor(scp, [scp, to] { return scp->property("currentLayer").toInt() == to; }, [scp, page, before](bool ok) {
-        if (ok) pushGroup(scp, page, before ? 2 : 1, true);
+    waitFor(scp, [scp, to] { return scp->property("currentLayer").toInt() == to; }, [scp, page, before, sig](bool ok) {
+        if (ok) pushGroup(scp, page, before ? 2 : 1, true, {}, sig);
         else groupsUnknown("a layer switch not applied");
     });
 }
+void switchLayer(QObject *sc, int to) { switchLayerWith(sc, to, false); }
 
 // Object mode ended by the user with nothing selected (a tap on no object, a lasso or pen tap that selected nothing):
 // the writing layer current again, one undo group with the step before it (developer, #3: writing and the lasso on the
@@ -608,20 +612,23 @@ Item {
     Repeater {
         model: layer.boxes
         Item {
+            id: box
             x: modelData.x - 4; y: modelData.y - 4; width: modelData.width + 8; height: modelData.height + 8
+            // dashes of 9 about every 16, spread so the first and the last touch the corners (whole dashes from 0
+            // left the right and bottom ends up to 20 px short: developer)
+            readonly property int nx: Math.max(2, Math.round((width - 9) / 16) + 1)
+            readonly property int ny: Math.max(2, Math.round((height - 9) / 16) + 1)
             Repeater {   // top and bottom edges
-                model: Math.max(1, Math.floor(parent.width / 16)) * 2
+                model: box.nx * 2
                 Rectangle {
-                    readonly property int n: Math.max(1, Math.floor(parent.width / 16))
-                    x: (index % n) * 16; y: index < n ? 0 : parent.height - 2
+                    x: (index % box.nx) * (box.width - 9) / (box.nx - 1); y: index < box.nx ? 0 : box.height - 2
                     width: 9; height: 2; color: "black"
                 }
             }
             Repeater {   // left and right edges
-                model: Math.max(1, Math.floor(parent.height / 16)) * 2
+                model: box.ny * 2
                 Rectangle {
-                    readonly property int n: Math.max(1, Math.floor(parent.height / 16))
-                    y: (index % n) * 16; x: index < n ? 0 : parent.width - 2
+                    y: (index % box.ny) * (box.height - 9) / (box.ny - 1); x: index < box.ny ? 0 : box.width - 2
                     width: 2; height: 9; color: "black"
                 }
             }
@@ -879,7 +886,9 @@ void highlightToTextLayer(QQuickItem *dv, QObject *sc, const QString &pageId, co
         if (why) TLOG("highlight: %s", why);
         if (scp) setLayer(scp, w);
         QTimer::singleShot(400, qApp, [prevp, scp, w] {
-            if (prevp) tapItem(prevp);
+            // back to the tool only if it changed: tapping the highlighter while it is still on showed it chosen again
+            // (developer, 2026-11-24)
+            if (prevp && activeToolButton() != prevp) tapItem(prevp);
             if (scp) repaintLayer(scp, w);
             g_putting = false;
         });
@@ -913,6 +922,21 @@ void highlightToTextLayer(QQuickItem *dv, QObject *sc, const QString &pageId, co
                     pend << Pend{r.id, h, p.box, p.d, p.k};
                     break;
                 }
+            if (pend.isEmpty()) {   // diagnosis: why no object took it
+                QStringList why;
+                for (const QRect &s : strokes)
+                    for (const Placement &p : po.found) {
+                        const Rec &r = po.recs[p.rec];
+                        int a = 0, b = 0;
+                        why << QStringLiteral("\"%1\" %2,%3 %4x%5 on %6 range %7").arg(r.text.left(20))
+                                   .arg(p.box.x(), 0, 'f', 0).arg(p.box.y(), 0, 'f', 0).arg(p.box.width(), 0, 'f', 0)
+                                   .arg(p.box.height(), 0, 'f', 0).arg(highlightOn(r, p, s) ? 1 : 0)
+                                   .arg(rangeFromRect(r.text, pageLines(r, p), QRectF(s), &a, &b) ? 1 : 0);
+                        why.last() += QStringLiteral(" (stroke %1,%2 %3x%4)").arg(s.x()).arg(s.y()).arg(s.width()).arg(s.height());
+                    }
+                TLOG("highlight: %lld object(s) found on the text layer: %s", (long long)po.found.size(),
+                     qPrintable(why.join(QStringLiteral("; "))));
+            }
             setLayer(scp, w);
             if (pend.isEmpty()) {   // back to the freehand stroke
                 QTimer::singleShot(400, scp, [=] {
@@ -1042,7 +1066,7 @@ void followBands(QObject *sc, const QString &pageId) {
             useSelectionTool();
             QTimer::singleShot(300, scp, [scp, rects, want, draw, w] {
                 if (!scp) { g_putting = false; return; }
-                setSelection(scp, rects, want, [scp, want, draw, w] {
+                setSelection(scp, rects, want, [scp, rects, want, draw, w] {
                     if (!scp) { g_putting = false; return; }
                     if (scp->property("selectionItemCount").toInt() != want.size()) {
                         TLOG("bands: the old bands could not be selected alone: left, new ones drawn");
@@ -1050,8 +1074,33 @@ void followBands(QObject *sc, const QString &pageId) {
                         draw(false);
                         return;
                     }
-                    QMetaObject::invokeMethod(scp, "deleteSelectedItems", Q_ARG(int, w));
-                    QTimer::singleShot(300, scp, [draw] { draw(true); });
+                    // a moment after the selection settles; checked, once more if it stayed (device 2026-11-24: the old
+                    // band was left selected in its place, next to the new one)
+                    // (whether it went is read from the page: selectionItemCount stayed 1 after the delete)
+                    QSet<QString> old;
+                    for (int i : want) old.insert(rectKey(rects[i]));
+                    auto del = std::make_shared<std::function<void(int)>>();
+                    *del = [scp, draw, w, del, old](int tries) {
+                        if (!scp) { g_putting = false; return; }
+                        // on the layer the selection is on (the current one; w was not always current by now)
+                        const int cur = scp->property("currentLayer").toInt();
+                        if (cur != w) TLOG("bands: deleting on layer %d, the writing layer is %d", cur + 1, w + 1);
+                        QMetaObject::invokeMethod(scp, "deleteSelectedItems", Qt::DirectConnection, Q_ARG(int, cur));
+                        QTimer::singleShot(400, scp, [scp, draw, del, tries, old] {
+                            if (!scp) { g_putting = false; return; }
+                            // still selected (selected strokes are not in pageLineRects) or still on the page
+                            int left = 0;
+                            for (const QRect &r : lineRects(scp)) if (old.contains(rectKey(r))) ++left;
+                            for (const QRect &r : pageLineRects(scp)) if (old.contains(rectKey(r))) ++left;
+                            if (left > 0 && tries < 1) { TLOG("bands: the old band still selected (%d): deleting again", left); (*del)(tries + 1); return; }
+                            if (left > 0) { TLOG("bands: the old band could not be deleted (%d selected)", left); endSelection(scp, nullptr); }
+                            // the selection frame stayed drawn on the deleted band (selectionItemCount 1; gone once the
+                            // page was opened again: device 2026-11-24): the selection is ended
+                            else QMetaObject::invokeMethod(scp, "clearSelectedItems", Qt::DirectConnection);
+                            draw(left == 0);
+                        });
+                    };
+                    QTimer::singleShot(300, scp, [del] { (*del)(0); });
                 });
             });
         };

@@ -45,6 +45,7 @@ QList<QRectF> textBoxesOf(const QString &page);
 void forgetTextBox(const QString &page, const QRectF &box);
 void requestBoxes();
 void switchLayer(QObject *sc, int to);
+void switchLayerWith(QObject *sc, int to, bool stepBefore);
 int textObjectsAt(const QString &page, const QPointF &at, QRectF *box);
 void waitFor(QPointer<QObject> scp, std::function<bool()> cond, std::function<void(bool)> next, int tries);
 
@@ -71,11 +72,16 @@ void groupsUnknown(const char *why) {
 
 // A group of n steps just done on top of the history. merge: it joins the group under it if that one is still on top
 // (a layer switch goes with the action next to it: one press undoes both). The fingerprint is taken a moment later.
-void pushGroup(QObject *sc, const QString &page, int n, bool merge, const QList<QRectF> &boxes = {}) {
+// sigBefore: the page as it was before this group's own steps (a layer switch changes the fingerprint itself, so the
+// group under it is matched against the page before the switch; device 2026-11-24: the switch after a tap off an
+// object never merged, and its group of 2 took one step of the conversion or edit under it).
+void pushGroup(QObject *sc, const QString &page, int n, bool merge, const QList<QRectF> &boxes = {},
+               const QString &sigBefore = QString()) {
     if (!g_groupsKnown) { g_undoGroups.clear(); g_redoGroups.clear(); }
     QList<QRectF> bs = boxes;
     if (merge && !g_undoGroups.isEmpty() && g_undoGroups.last().page == page
-        && (g_undoGroups.last().post.isEmpty() || g_undoGroups.last().post == pageSig(sc))) {
+        && (g_undoGroups.last().post.isEmpty() || g_undoGroups.last().post == pageSig(sc)
+            || (!sigBefore.isEmpty() && g_undoGroups.last().post == sigBefore))) {
         const Group under = g_undoGroups.takeLast();   // the step "before" the switch is that group
         n += under.n - 1;
         bs += under.boxes;
@@ -234,7 +240,7 @@ void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k, cons
             rememberTextBox(page, box);
             QMetaObject::invokeMethod(sc, "clearSelectedItems");
             useSelectionTool();
-            switchLayer(sc, text);
+            switchLayerWith(sc, text, true);   // the addition above is the step before it
             waitFor(scp, [scp, text] { return scp->property("currentLayer").toInt() == text; }, [scp, page, box, newKeys, text](bool ok) {
                 if (!ok || !scp) return;
                 QTimer::singleShot(150, scp, [scp, page, box, newKeys, text] { placeOnTextLayer(scp, page, box, newKeys, text); });

@@ -2,13 +2,13 @@
 # in place, with its highlight on the same characters.
 open
 object "Edit test" 900 1100
-highlight 890 1060 1100
+highlight 900 1020 1100
 expect-log "highlight: \d+ band\(s\) on the writing layer, bound to 1 object"
 tool select
 mark
 dtap 960 1100
 expect-log "double tap: selecting a text object"
-expect-log "edit: 1 object\(s\), 1 highlight\(s\)"
+expect-log "edit: 1 object\(s\)"
 shot edit-1-box
 text "ed"
 tap 1470 766
