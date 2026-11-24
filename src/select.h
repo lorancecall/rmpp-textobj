@@ -730,8 +730,6 @@ void snapHighlights(QQuickItem *dv, QObject *sc, const QList<HlCapture> &caps) {
 
 // layer.h: a highlighter stroke drawn on the writing layer over objects of the Text objects layer
 bool overTextObjects(const QString &page, const QRect &r);
-void dropErasedBands(QObject *sc, const QString &pageId);
-bool isOwnBand(const QString &key);
 void highlightToTextLayer(QQuickItem *dv, QObject *sc, const QString &pageId, const QList<QRect> &strokes, int color,
                           uint argb);
 
@@ -741,7 +739,6 @@ void highlightToTextLayer(QQuickItem *dv, QObject *sc, const QString &pageId, co
 void checkHighlights(QQuickItem *dv, QObject *sc, const QString &pageId, const QSet<QString> &newKeys) {
     const PageObjects po = findObjects(sc, pageId, true);
     const int tl = textLayer(sc);
-    if (tl >= 0 && sc->property("currentLayer").toInt() != tl) dropErasedBands(sc, pageId);
     if (!newKeys.isEmpty() && tl >= 0 && sc->property("currentLayer").toInt() != tl) {
         int color = kHighlighterYellow;
         uint argb = 0;
@@ -750,12 +747,12 @@ void checkHighlights(QQuickItem *dv, QObject *sc, const QString &pageId, const Q
         QList<QRect> over;
         if (snap)
             for (const QRect &r : po.rects)
-                if (newKeys.contains(rectKey(r)) && !isOwnBand(rectKey(r)) && overTextObjects(pageId, r)) over << r;
+                if (newKeys.contains(rectKey(r)) && overTextObjects(pageId, r)) over << r;
         QStringList seen;   // diagnosis: the strokes and the object boxes compared
         if (snap && over.isEmpty()) {
             for (const QRect &r : po.rects)
-                if (newKeys.contains(rectKey(r))) seen << QStringLiteral("stroke %1,%2 %3x%4%5").arg(r.x()).arg(r.y())
-                    .arg(r.width()).arg(r.height()).arg(isOwnBand(rectKey(r)) ? QStringLiteral(" (own band)") : QString());
+                if (newKeys.contains(rectKey(r))) seen << QStringLiteral("stroke %1,%2 %3x%4").arg(r.x()).arg(r.y())
+                    .arg(r.width()).arg(r.height());
             for (const QRectF &b : textBoxesOf(pageId))
                 seen << QStringLiteral("box %1,%2 %3x%4").arg(b.x()).arg(b.y()).arg(b.width()).arg(b.height());
         }
@@ -765,9 +762,6 @@ void checkHighlights(QQuickItem *dv, QObject *sc, const QString &pageId, const Q
         if (!over.isEmpty()) { highlightToTextLayer(dv, sc, pageId, over, color, argb); return; }
     }
     if (po.found.isEmpty()) return;
-    // the bands live on the writing layer now (layer.h): a highlight is not "gone" for not being on this layer;
-    // erased bands are seen there (dropErasedBands)
-    if (tl >= 0 && sc->property("currentLayer").toInt() == tl) return;
     // gone: none of a highlight's strokes on any copy of the object
     QHash<int, QSet<int>> shown;   // record index -> highlights seen
     QSet<int> seen;

@@ -14,6 +14,7 @@ log. Everything happens on one notebook named "scratch"; the tool refuses to dra
   device.py dtap X Y               a finger double tap
   device.py drag X1 Y1 X2 Y2       a pen drag (moves a selection with the selection tool)
   device.py text "Text"            type into the focused field
+  device.py key ctrl+a             a key (rmpp_ctl key)
   device.py shot NAME              screenshot to $RMPP_SHOTS/NAME.png
   device.py log [SECONDS]          the add-on's log lines of the last SECONDS (default 30)
   device.py run STEPS              one step per line (same words as above), "wait MS" allowed; "#" comments
@@ -174,7 +175,8 @@ def pen_stroke(pts):
     """One pen stroke through pts ("X,Y" strings). The pen hovers at the start first: the first injected stroke after a
     restart otherwise began where the pen had last been seen (a line across the page, device 2026-11-24)."""
     x0, y0 = pts[0].split(",")
-    script = [f"pen hover {x0} {y0}", "sleep 150", f"pen hover {x0} {y0}", "sleep 100",
+    script = ["pen out", "sleep 100", f"pen hover {x0} {y0}", "sleep 150", f"pen hover {x0} {y0}", "sleep 150",
+              f"pen hover {x0} {y0}", "sleep 100",
               f"stroke 0.5 1200 : {' '.join(pts)}", "pen out"]
     ctl("input", stdin="\n".join(script) + "\n")
 
@@ -305,6 +307,8 @@ def step_deploy(note):
             break
         wait(3000)
     print(ssh("mount -o remount,ro / && echo RO; systemctl is-active xochitl").strip())
+    # the pen seen once out of the page after the restart: the first injected stroke otherwise began at a stale point
+    ctl("input", stdin="pen hover 1500 2050\nsleep 200\npen hover 1510 2060\nsleep 200\npen out\n", check=False)
     lock_note(f"#3 {note} on device, test")
 
 
@@ -332,6 +336,9 @@ def run_step(words):
     elif cmd == "text":
         ctl("text", args[0])
         wait(1000)
+    elif cmd == "key":
+        ctl("key", args[0])
+        wait(800)
     elif cmd == "swipe":
         ctl("swipe", *args)
         wait(2500)

@@ -30,8 +30,9 @@ has **rmpp setup**, the installer for all rmpp add-ons.
 - **Edit**: double tap an object with a finger: it is selected and its text, weight and size open for editing
   (Cancel leaves it selected to move).
 - **Always whole**: lasso, move, copy and delete act on whole objects; erasing part of one makes it plain strokes.
-- **Highlights** are kept with the object and come back on the same characters after an edit; underlines and
-  other handwriting stay separate.
+- **Highlights** snap to the characters as a band that goes with the object and comes back on the same characters
+  after an edit; in the edit box, a Highlight button turns them on and off per character. Underlines and other
+  handwriting stay separate.
 - **Handwriting to text objects**: [rmpp-hwr](https://github.com/lorancecall/rmpp-hwr)'s lasso convert.
 
 Details: [docs/usage.md](docs/usage.md).

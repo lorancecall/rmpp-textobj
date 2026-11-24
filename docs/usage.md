@@ -9,12 +9,14 @@
 - **Always whole**: a lasso that covers part of a text object selects all of it (at least half of its strokes
   inside) or none of it, so moving, deleting and copying act on whole objects. A pasted copy is a text object too.
   Erasing part of an object turns it into plain strokes.
-- **Highlights**: a highlighter stroke on a text object is kept with the object, with the characters it covers and
-  its colour: it moves and is copied with it, and editing the text draws it again on the same characters as a band
-  as high as the line (text inserted before it moves it; its text deleted removes it). Erasing the band removes the
-  highlight. Highlights drawn before this version come back yellow after an edit. The stroke stays as drawn until
-  the next edit; snapping it to the characters right away (`snapHighlights=true` in
-  `~/.config/rmpp-textobj/settings.conf`) is experimental and does not work on the device yet.
+- **Highlights**: with the highlighter's Snap to text on, a highlighter stroke over a text object becomes a straight
+  band over the characters it covers, in its colour, on the Text objects layer with the object: it is selected,
+  moved, copied and deleted with it, and editing the text draws it again on the same characters (text inserted
+  before it moves it; its text deleted removes it). One undo takes the band back.
+- **Highlights in the edit box**: the Highlight button works as bold does in a word processor: on, what you type is
+  highlighted; with characters selected, it turns their highlight on or off. The square next to it picks the colour.
+  The preview shows the highlights as they will be drawn. (The eraser on your writing layer does not reach the
+  bands; take a highlight off in the edit box.) Highlights drawn before this version come back yellow after an edit.
 - **With handwriting**: an underline drawn on a text object goes with it (selected with it, never recognized as
   handwriting); editing the text removes it. Other handwriting stays separate: a lasso takes text objects (whole) and handwriting
   together as usual; with handwriting in the selection a double tap selects the tapped object alone and edits it. Handwriting drawn across an object

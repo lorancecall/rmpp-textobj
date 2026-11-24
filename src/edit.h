@@ -46,6 +46,7 @@ void forgetTextBox(const QString &page, const QRectF &box);
 void requestBoxes();
 void switchLayer(QObject *sc, int to);
 void switchLayerWith(QObject *sc, int to, bool stepBefore);
+void repaintLayer(QObject *sc, int layer);
 int textObjectsAt(const QString &page, const QPointF &at, QRectF *box);
 void waitFor(QPointer<QObject> scp, std::function<bool()> cond, std::function<void(bool)> next, int tries);
 
@@ -532,7 +533,90 @@ Item {
     property int weight: 1        // 0 thin, 1 medium, 2 thick
     property int sizePct: 100     // size of the ink, % of xochitl's body text (kBodyEm)
     property int rev: 0           // bumps the preview image
-    function refresh() { tobj.inkText = input.text; tobj.inkWeight = weight; tobj.inkSize = sizePct; rev++; }
+    // highlights, per character as bold in a word processor (developer, #3): [{a, b, c, argb}], UTF-16 offsets in
+    // the text; the Highlight button turns it on for what is typed next, or on/off for the selected characters
+    property string hlsInit: ""
+    property var hls: []
+    property bool hlOn: false
+    property int hlColor: 3
+    property int hlArgb: 0
+    property string seenText: initial   // the text the ranges are for
+    property int seenCursor: -1         // the cursor position the button's state was taken at
+    property int edits: 0               // text changes seen (a cursor move that came with one is not a move)
+    property bool paletteOpen: false
+    readonly property var hlColors: [3, 4, 5, 14, 15, 16]
+    function hlString() { return hls.map(h => h.a + "," + h.b + "," + h.c + "," + h.argb).join(";"); }
+    function colourOf(c, argb) {
+        if (c === 9 && argb) return "#" + (argb & 0xffffff).toString(16).padStart(6, "0");
+        return ({3: "#fff275", 4: "#acff85", 5: "#ffa8d6", 14: "#8fd1ff", 15: "#ffc870", 16: "#c8c8c8"})[c] || "#fff275";
+    }
+    function isHl(i) { for (const h of hls) if (h.a <= i && i < h.b) return true; return false; }
+    function covered(a, b) { for (let i = a; i < b; ++i) if (!isHl(i)) return false; return b > a; }
+    // [a, b) off, then on in colour c (argb); touching ranges of one colour merge
+    function setRange(a, b, on, c, argb) {
+        let out = [];
+        for (const h of hls) {
+            if (h.b <= a || h.a >= b) { out.push(h); continue; }
+            if (h.a < a) out.push({a: h.a, b: a, c: h.c, argb: h.argb});
+            if (h.b > b) out.push({a: b, b: h.b, c: h.c, argb: h.argb});
+        }
+        if (on && b > a) out.push({a: a, b: b, c: c, argb: argb});
+        out.sort((x, y) => x.a - y.a);
+        let merged = [];
+        for (const h of out) {
+            const l = merged.length ? merged[merged.length - 1] : null;
+            if (l && l.b === h.a && l.c === h.c && l.argb === h.argb) l.b = h.b; else merged.push(h);
+        }
+        hls = merged;
+    }
+    // the text changed: the ranges follow (text before them inserted or deleted), and what was typed takes the
+    // button's state
+    function textEdited(t) {
+        const o = seenText;
+        seenText = t;
+        ++edits;
+        let p = 0;
+        while (p < o.length && p < t.length && o[p] === t[p]) ++p;
+        let so = o.length, sn = t.length;
+        while (so > p && sn > p && o[so - 1] === t[sn - 1]) { --so; --sn; }
+        const del = so - p, ins = sn - p;
+        let out = [];
+        for (const h of hls) {
+            let a = h.a <= p ? h.a : Math.max(p, h.a - del), b = h.b <= p ? h.b : Math.max(p, h.b - del);
+            if (a >= p) a += ins;
+            if (b > p) b += ins;
+            if (b > a) out.push({a: a, b: b, c: h.c, argb: h.argb});
+        }
+        hls = out;
+        if (ins > 0) setRange(p, p + ins, hlOn, hlColor, hlArgb);
+    }
+    function toggleHl() {
+        console.log("[rmpp-textobj] edit box: highlight button, selection " + input.selectionStart + "-" + input.selectionEnd + ", was " + hlOn);
+        const s = input.selectionStart, e = input.selectionEnd;
+        if (s < e) { const on = !covered(s, e); setRange(s, e, on, hlColor, hlArgb); hlOn = on; }
+        else hlOn = !hlOn;
+        seenCursor = input.cursorPosition;   // the button's state holds until the cursor goes elsewhere
+        console.log("[rmpp-textobj] edit box: highlight now " + hlOn + ", ranges " + hlString());
+        refresh();
+    }
+    function pickColour(c) {
+        paletteOpen = false;
+        hlColor = c;
+        hlArgb = 0;
+        const s = input.selectionStart, e = input.selectionEnd;
+        if (s < e && covered(s, e)) setRange(s, e, true, hlColor, hlArgb);   // the selected highlight recoloured
+        refresh();
+    }
+    Component.onCompleted: {
+        let out = [];
+        for (const part of hlsInit.split(";")) {
+            const v = part.split(",").map(Number);
+            if (v.length === 4 && v[1] > v[0]) out.push({a: v[0], b: v[1], c: v[2], argb: v[3]});
+        }
+        hls = out;
+        if (out.length) { hlColor = out[0].c; hlArgb = out[0].argb; }
+    }
+    function refresh() { tobj.inkText = input.text; tobj.inkWeight = weight; tobj.inkSize = sizePct; tobj.inkHls = hlString(); rev++; }
     onWeightChanged: refresh()
     onSizePctChanged: refresh()
     Timer { id: typing; interval: 300; onTriggered: shade.refresh() }
@@ -576,7 +660,21 @@ Rectangle {
                 text: shade.initial
                 focus: true
                 onCursorRectangleChanged: flick.ensureVisible(cursorRectangle)
-                onTextChanged: typing.restart()
+                onTextChanged: { shade.textEdited(text); typing.restart(); }
+                // the button shows whether the character before the cursor is highlighted (typing goes on with it);
+                // a text change not yet seen is left to textEdited
+                // (only when the cursor went somewhere else: a tap on the button sent the same position again and
+                // turned it off, device 2026-11-24)
+                // (looked at a moment later: typing moves the cursor before the text changes, device 2026-11-24)
+                onCursorPositionChanged: {
+                    const n = shade.edits;
+                    Qt.callLater(() => {
+                        if (shade.edits !== n) { shade.seenCursor = input.cursorPosition; return; }   // typed
+                        if (input.selectionStart !== input.selectionEnd || input.cursorPosition === shade.seenCursor) return;
+                        shade.seenCursor = input.cursorPosition;
+                        shade.hlOn = shade.isHl(input.cursorPosition - 1);
+                    });
+                }
                 // a cursor that does not blink: each blink was a screen update (about twice a second, as long as
                 // the box is open), which on e-paper flickers (#9)
                 cursorDelegate: Rectangle { width: 3; color: "black"; visible: input.activeFocus }
@@ -620,6 +718,41 @@ Rectangle {
         ArkControls.Button { text: "−"; type: ArkTokens.Button.secondary; onClicked: shade.sizePct = Math.max(50, shade.sizePct - 10) }
         Text { text: shade.sizePct + "%"; font.pixelSize: 32; width: 100; horizontalAlignment: Text.AlignHCenter; anchors.verticalCenter: parent.verticalCenter }
         ArkControls.Button { text: "+"; type: ArkTokens.Button.secondary; onClicked: shade.sizePct = Math.min(400, shade.sizePct + 10) }
+        Item { width: 24; height: 1 }
+        ArkControls.Button {
+            objectName: "rmppTextobjHighlight"
+            text: "Highlight"
+            focusPolicy: Qt.NoFocus   // the text field keeps the focus and its selection
+            type: shade.hlOn ? ArkTokens.Button.primary : ArkTokens.Button.secondary
+            onClicked: shade.toggleHl()
+        }
+        Rectangle {   // the highlight colour: a tap takes the next one
+            objectName: "rmppTextobjHighlightColour"
+            width: 56; height: 56; anchors.verticalCenter: parent.verticalCenter
+            color: shade.colourOf(shade.hlColor, shade.hlArgb); border.color: "black"; border.width: 2
+            MouseArea { anchors.fill: parent; onClicked: shade.paletteOpen = !shade.paletteOpen }
+        }
+    }
+    Rectangle {   // the colours to pick from (the highlighter's), above the colour square
+        objectName: "rmppTextobjPalette"
+        visible: shade.paletteOpen
+        x: 760; y: 540; width: palette.width + 24; height: 80
+        color: "white"; border.color: "black"; border.width: 2
+        Row {
+            id: palette
+            x: 12; anchors.verticalCenter: parent.verticalCenter; spacing: 12
+            Repeater {
+                model: shade.hlColors
+                delegate: Rectangle {
+                    required property int modelData
+                    objectName: "rmppTextobjColour" + modelData
+                    width: 56; height: 56
+                    color: shade.colourOf(modelData, 0)
+                    border.color: "black"; border.width: shade.hlColor === modelData ? 5 : 1
+                    MouseArea { anchors.fill: parent; onClicked: shade.pickColour(parent.modelData) }
+                }
+            }
+        }
     }
     Row {
         x: parent.width - width - 36; y: 636; spacing: 24
@@ -630,6 +763,7 @@ Rectangle {
             onClicked: {
                 Qt.inputMethod.commit();
                 tobj.inkText = input.text; tobj.inkWeight = shade.weight; tobj.inkSize = shade.sizePct;
+                tobj.inkHls = shade.hlString();
                 tobj.command = "inkok#" + Date.now();
             }
         }
@@ -656,6 +790,49 @@ struct InkEdit {
 };
 InkEdit g_edit;
 
+// The edit box's highlights ("a,b,c,argb;...", UTF-16 offsets in the box's text) as Hl ranges in code points of
+// the trimmed text (the text drawn), without rects.
+QList<Hl> boxHighlights(const QString &boxText, const QString &spec) {
+    QList<Hl> out;
+    int lead = 0;
+    while (lead < boxText.size() && boxText.at(lead).isSpace()) ++lead;
+    const int len = int(boxText.trimmed().toUcs4().size());
+    auto cp = [&](int u16) { return int(boxText.left(qBound(0, u16, int(boxText.size()))).toUcs4().size())
+                                 - int(boxText.left(lead).toUcs4().size()); };
+    for (const QString &part : spec.split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
+        const QStringList v = part.split(QLatin1Char(','));
+        if (v.size() != 4) continue;
+        Hl h;
+        h.a = qBound(0, cp(v[0].toInt()), len);
+        h.b = qBound(0, cp(v[1].toInt()), len);
+        h.color = v[2].toInt();
+        h.argb = v[3].toUInt();
+        if (h.b > h.a) out.append(h);
+    }
+    return out;
+}
+
+// The edit box's highlights as it starts: ranges in code points of text, as "a,b,c,argb;..." in UTF-16 offsets.
+QString boxHighlightSpec(const QString &text, const QList<Hl> &hls) {
+    const QList<uint> u = text.toUcs4();
+    auto u16 = [&](int cp) { return int(QString::fromUcs4(reinterpret_cast<const char32_t *>(u.constData()), qBound(0, cp, int(u.size()))).size()); };
+    QStringList parts;
+    for (const Hl &h : hls) parts << QStringLiteral("%1,%2,%3,%4").arg(u16(h.a)).arg(u16(h.b)).arg(h.color).arg(h.argb);
+    return parts.join(QLatin1Char(';'));
+}
+
+QColor highlightColour(int c, uint argb) {
+    if (c == 9 && argb) return QColor::fromRgb(argb | 0xff000000u);
+    switch (c) {
+    case 4: return QColor(0xac, 0xff, 0x85);
+    case 5: return QColor(0xff, 0xa8, 0xd6);
+    case 14: return QColor(0x8f, 0xd1, 0xff);
+    case 15: return QColor(0xff, 0xc8, 0x70);
+    case 16: return QColor(0xc8, 0xc8, 0xc8);
+    default: return QColor(0xff, 0xf2, 0x75);
+    }
+}
+
 // The edit box's preview: the text as it will be drawn (glyphs, weight, size, wrap), at page scale, black on white.
 class InkPreviewProvider : public QQuickImageProvider {
 public:
@@ -669,11 +846,14 @@ public:
         const double scale = qBound(50, g_state->value(QStringLiteral("inkSize")).toInt(), 400) / double(qMax(1, g_edit.pct0));
         const int weight = qBound(0, g_state->value(QStringLiteral("inkWeight")).toInt(), 2);
         const double em = g_edit.em * scale;
-        const Placed pl = placeText(g_state->value(QStringLiteral("inkText")).toString().trimmed(), QPointF(12, 8), em,
-                                    g_edit.maxW * scale);
+        const QString boxText = g_state->value(QStringLiteral("inkText")).toString();
+        const Placed pl = placeText(boxText.trimmed(), QPointF(12, 8), em, g_edit.maxW * scale);
         static const double divisor[] = {32.0, 20.0, 13.0};
         QPainter p(&img);
         p.setRenderHint(QPainter::Antialiasing);
+        // the highlights under the glyphs, as the bands will be drawn
+        for (const Hl &h : boxHighlights(boxText, g_state->value(QStringLiteral("inkHls")).toString()))
+            for (const QRectF &r : bandRects(boxText.trimmed(), pl.lines, h.a, h.b)) p.fillRect(r, highlightColour(h.color, h.argb));
         p.setPen(QPen(Qt::black, qBound(1.5, em / divisor[weight], 9.0), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         for (const auto &st : pl.strokes) {
             if (st.size() == 1) p.drawPoint(st[0]);
@@ -709,10 +889,12 @@ void showInkEditBox(QQuickItem *dv, InkEdit e, const QString &title, const QStri
     e.pct0 = qBound(50, int(std::lround(e.em / kBodyEm * 10.0)) * 10, 400);
     g_edit = e;   // before the box: its preview reads em and maxW
     g_state->insert(QStringLiteral("inkMissing"), missingGlyphs(text));
+    const QString spec = boxHighlightSpec(text, e.hls);
+    g_state->insert(QStringLiteral("inkHls"), spec);
     QObject *o = createWithState(dv, kEditQml, "InkEdit",
                                  {{QStringLiteral("initial"), text}, {QStringLiteral("penManager"), QVariant::fromValue(mgr)},
                                   {QStringLiteral("weight"), weight}, {QStringLiteral("title"), title},
-                                  {QStringLiteral("sizePct"), e.pct0}});
+                                  {QStringLiteral("sizePct"), e.pct0}, {QStringLiteral("hlsInit"), spec}});
     if (!o) { g_edit = InkEdit{}; return; }
     g_edit.box = o;
     g_edit.dv = dv;
@@ -797,10 +979,21 @@ void closeStaleInkEdit() {
 // Applies the edit; true when the ink is being redrawn (putInk).
 bool applyInkEdit(const InkEdit &e) {
     if (!e.sc || !e.ph || !e.dv || e.dv->property("currentPageId").toString() != e.page) return false;
-    const QString text = g_state->value(QStringLiteral("inkText")).toString().trimmed();
+    const QString boxText = g_state->value(QStringLiteral("inkText")).toString();
+    const QString text = boxText.trimmed();
+    QList<Hl> boxHls = boxHighlights(boxText, g_state->value(QStringLiteral("inkHls")).toString());
     const int weight = qBound(0, g_state->value(QStringLiteral("inkWeight")).toInt(), 2);
     const double size = qBound(50, g_state->value(QStringLiteral("inkSize")).toInt(), 400) / double(qMax(1, e.pct0));
-    if (!e.create && !e.text0.isEmpty() && text == e.text0 && weight == e.weight0 && qFuzzyCompare(size, 1.0))
+    auto sameHls = [](QList<Hl> x, QList<Hl> y) {
+        auto key = [](const Hl &h) { return QStringLiteral("%1,%2,%3,%4").arg(h.a).arg(h.b).arg(h.color).arg(h.argb); };
+        QStringList kx, ky;
+        for (const Hl &h : x) kx << key(h);
+        for (const Hl &h : y) ky << key(h);
+        kx.sort(); ky.sort();
+        return kx == ky;
+    };
+    if (!e.create && !e.text0.isEmpty() && text == e.text0 && weight == e.weight0 && qFuzzyCompare(size, 1.0)
+        && sameHls(boxHls, e.hls))
         return false;   // nothing changed
     if (blankText(text)) {
         if (!e.create) {   // empty (or only spaces): the object is deleted, strokes and record
@@ -823,12 +1016,17 @@ bool applyInkEdit(const InkEdit &e) {
     if (e.create) {
         // selected and recorded like any new object: needs the selection tool (with the pen, selecting does nothing)
         const bool switchTool = useSelectionTool();
-        QTimer::singleShot(switchTool ? 600 : 0, qApp, [e, pl, text] {
-            putInk(e.sc, e.ph, e.dv, e.layer, false, pl, text, {}, true);
+        QList<Hl> hls;
+        for (Hl h : boxHls) { h.rects = bandRects(text, pl.lines, h.a, h.b); if (!h.rects.isEmpty()) hls << h; }
+        QTimer::singleShot(switchTool ? 600 : 0, qApp, [e, pl, text, hls] {
+            putInk(e.sc, e.ph, e.dv, e.layer, false, pl, text, {}, true, hls);
         });
         return true;
     }
-    const QList<Hl> hls = placeHighlights(e.hls, e.joined, text, pl.lines);
+    // the box's highlights (it keeps them with the text as it is edited)
+    QList<Hl> hls;
+    for (Hl h : boxHls) { h.rects = bandRects(text, pl.lines, h.a, h.b); if (!h.rects.isEmpty()) hls << h; }
+    TLOG("edit: %lld highlight(s) from the box", (long long)hls.size());
     putInk(e.sc, e.ph, e.dv, e.layer, true, pl, text, e.removeIds, true, hls);
     if (e.underlines > 0) showHint(e.dv, QStringLiteral("The marks on the text were removed with the old text. Draw them again if you like."), 5000);
     return true;

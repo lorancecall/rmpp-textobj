@@ -3,7 +3,7 @@
 open
 object "Edit test" 900 1100
 highlight 900 1020 1100
-expect-log "highlight: \d+ band\(s\) on the writing layer, bound to 1 object"
+expect-log "highlight: \d+ band\(s\) on the text layer, with 1 object"
 tool select
 mark
 dtap 960 1100
