@@ -1,0 +1,23 @@
+# Editing a text object (#3): a finger double tap selects it and opens the edit box; OK puts the new text
+# in place, with its highlight on the same characters.
+open
+object "Edit test" 900 1100
+highlight 890 1060 1100
+expect-log "highlight: \d+ band\(s\) on the writing layer, bound to 1 object"
+tool select
+mark
+dtap 960 1100
+expect-log "double tap: selecting a text object"
+expect-log "edit: 1 object\(s\), 1 highlight\(s\)"
+shot edit-1-box
+text "ed"
+tap 1470 766
+expect-log "edit: Edit tested"
+expect-log "new ink: \d+ strokes in one undo step"
+wait 3000
+tap 1300 1700
+wait 2500
+expect-ink 895 1080 1120 1125
+expect-ink 895 1080 1120 1125 green
+expect-no-log "not recorded|no room near"
+shot edit-2-edited

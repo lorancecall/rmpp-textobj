@@ -1,0 +1,11 @@
+# Add text object (#3): typed text becomes a text object on the Text objects layer, recorded, in one undo step.
+open
+mark
+object "Convert test" 900 300
+expect-log "add text object at view 900,300"
+expect-log "add text object: Convert test"
+expect-log "new ink: \d+ strokes in one undo step \(\d+ checks\), on the text layer"
+expect-log "recorded: \d+ strokes, 0 highlight\(s\)"
+expect-no-log "not recorded|not converted|no room near"
+expect-ink 895 280 1100 320
+shot convert-1-object

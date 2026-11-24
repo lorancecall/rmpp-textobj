@@ -11,6 +11,9 @@ log. Everything happens on one notebook named "scratch"; the tool refuses to dra
   device.py tool pen|highlighter|eraser|select|text
   device.py erase X1 X2 Y          an eraser stroke along Y
   device.py undo | redo
+  device.py dtap X Y               a finger double tap
+  device.py drag X1 Y1 X2 Y2       a pen drag (moves a selection with the selection tool)
+  device.py text "Text"            type into the focused field
   device.py shot NAME              screenshot to $RMPP_SHOTS/NAME.png
   device.py log [SECONDS]          the add-on's log lines of the last SECONDS (default 30)
   device.py run STEPS              one step per line (same words as above), "wait MS" allowed; "#" comments
@@ -21,6 +24,8 @@ Checks (in a steps file; a failed check is reported and the test goes on):
   expect-no-log REGEX              no add-on log line since the test started matches
   expect-color X Y COLOR           the screen around X,Y is COLOR: white, ink (dark), green, yellow, blue, pink, gray,
                                    or R,G,B
+  expect-ink X1 Y1 X2 Y2 [COLOR]   at least 20 pixels of COLOR (default ink: dark) in the rectangle
+  expect-none X1 Y1 X2 Y2 [COLOR]  fewer than 5 such pixels
   mark                             later expect-log / expect-no-log look only at lines after this point
 
 Environment: RMPP_HOST (default rmpp), RMPP_CTL (default ../rmpp-studio/rmpp_ctl.py), RMPP_SHOTS (default
@@ -124,6 +129,10 @@ def step_open():
     if "ToolButton" not in ctl("find", "#close-documentview-button", check=False):
         ctl("tap", 56, 56)
         wait(1500)
+    # every test starts on the writing layer: a page can open on the Text objects layer, and a tap on no object there
+    # goes back to writing (on the writing layer the tap does nothing)
+    ctl("tap", 1300, 1950)
+    wait(1500)
 
 
 def step_tool(name):
@@ -173,6 +182,22 @@ def step_erase(x1, x2, y):
     step_tool("eraser")
     pen_stroke(wavy(int(x1), int(x2), int(y), amp=4, n=6))
     wait(4000)
+
+
+def step_dtap(x, y):
+    """A finger double tap."""
+    ctl("input", stdin=f"tap {x} {y} 50\nsleep 120\ntap {x} {y} 50\n")
+    wait(2000)
+
+
+def step_drag(x1, y1, x2, y2, n=12):
+    """A pen drag (pressed) from x1,y1 to x2,y2: moves a selection with the selection tool."""
+    script = [f"pen hover {x1} {y1}", "sleep 150", f"pen down {x1} {y1} 0.5", "sleep 200"]
+    for i in range(1, n + 1):
+        script += [f"pen move {x1 + (x2 - x1) * i // n} {y1 + (y2 - y1) * i // n} 0.5", "sleep 30"]
+    script += ["sleep 200", "pen up", "pen out"]
+    ctl("input", stdin="\n".join(script) + "\n")
+    wait(2500)
 
 
 def step_shot(name):
@@ -231,6 +256,25 @@ def expect_color(x, y, color):
     check(max(abs(a - b) for a, b in zip(got, want)) <= 40, f"colour at {x},{y} is {color} (got {got})")
 
 
+def region_count(x1, y1, x2, y2, color):
+    """Pixels in the rectangle near COLOR ("ink": dark) on a fresh screenshot."""
+    from PIL import Image
+    os.makedirs(SHOTS, exist_ok=True)
+    path = os.path.join(SHOTS, "_check.png")
+    ctl("shot", path)
+    im = Image.open(path).convert("RGB").crop((x1, y1, x2, y2))
+    if color == "ink":
+        return sum(1 for p in im.getdata() if sum(p) < 300)
+    want = COLORS[color] if color in COLORS else tuple(int(v) for v in color.split(","))
+    return sum(1 for p in im.getdata() if max(abs(a - b) for a, b in zip(p, want)) <= 40)
+
+
+def expect_region(x1, y1, x2, y2, color="ink", present=True):
+    n = region_count(x1, y1, x2, y2, color)
+    ok = n >= 20 if present else n < 5
+    check(ok, f"{color} {'in' if present else 'not in'} {x1},{y1}-{x2},{y2} ({n} px)")
+
+
 def step_deploy(note):
     so = os.path.join(REPO, "build", "librmpp-textobj-ui.so")
     lock_note(f"#3 deploy + restart: {note}")
@@ -274,6 +318,13 @@ def run_step(words):
     elif cmd == "tap":
         ctl("tap", *args)
         wait(1500)
+    elif cmd == "dtap":
+        step_dtap(int(args[0]), int(args[1]))
+    elif cmd == "drag":
+        step_drag(*map(int, args))
+    elif cmd == "text":
+        ctl("text", args[0])
+        wait(1000)
     elif cmd == "swipe":
         ctl("swipe", *args)
         wait(2500)
@@ -291,6 +342,8 @@ def run_step(words):
         expect_log(args[0], present=False)
     elif cmd == "expect-color":
         expect_color(int(args[0]), int(args[1]), args[2])
+    elif cmd in ("expect-ink", "expect-none"):
+        expect_region(*map(int, args[:4]), *(args[4:5] or ["ink"]), present=cmd == "expect-ink")
     elif cmd == "deploy":
         step_deploy(" ".join(args) or "test build")
     else:
