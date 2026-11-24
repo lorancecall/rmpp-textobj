@@ -391,6 +391,30 @@ void switchLayer(QObject *sc, int to);                                   // laye
 void waitFor(QPointer<QObject> scp, std::function<bool()> cond, std::function<void(bool)> next, int tries = 0);   // layer.h
 
 void backToWriting(QObject *sc, const char *why);   // layer.h
+void toolChanged();                                 // layer.h
+void requestBoxes();                                // layer.h
+
+// Our own tap sequence (a double or single tap: tool, layer, selection, edit box) is under way: a tool change seen
+// meanwhile is ours, not the user's (the tool flickered off while a double tap turned it on, device c67d0d58). The
+// sequence ends by its own steps (TapSeqEnd when it returns with nothing pending, endTapSeq in its last callback);
+// the tool is then looked at once. The 5 s cap is only a fail-safe against a sequence that never ended.
+bool g_tapSeq = false, g_tapSeqAsync = false;
+QElapsedTimer g_tapSeqStarted;
+bool tapSequence() { return g_tapSeq && g_tapSeqStarted.isValid() && g_tapSeqStarted.elapsed() < 5000; }
+void endTapSeq() {
+    if (!g_tapSeq) return;
+    g_tapSeq = false;
+    g_tapSeqAsync = false;
+    QTimer::singleShot(0, qApp, [] { toolChanged(); requestBoxes(); });
+}
+struct TapSeqEnd {
+    ~TapSeqEnd() { if (!g_tapSeqAsync) endTapSeq(); }
+};
+// a continuation of the sequence (a callback): it ends the sequence when it returns, unless it goes on again
+struct TapSeqStep {
+    TapSeqStep() { g_tapSeqAsync = false; }
+    ~TapSeqStep() { if (!g_tapSeqAsync) endTapSeq(); }
+};
 
 // edit false: a single tap on the Text objects layer: the object there selected (no edit box), nothing there: back
 // to the writing layer.
@@ -399,6 +423,10 @@ void doubleTapNow(double x, double y, bool onText = false, bool edit = true) {
         TLOG("double tap: busy (edit box %d, putting %d, adjusting %d)", g_edit.box ? 1 : 0, putting() ? 1 : 0, adjusting() ? 1 : 0);
         return;
     }
+    if (!g_tapSeq) g_tapSeqStarted.start();
+    g_tapSeq = true;
+    g_tapSeqAsync = false;
+    TapSeqEnd seqEnd;
     QQuickItem *dv = documentView();
     QObject *sc = dv ? dv->property("sceneController").value<QObject *>() : nullptr;
     QPointF at;
@@ -434,8 +462,10 @@ void doubleTapNow(double x, double y, bool onText = false, bool edit = true) {
         useSelectionTool();
         switchLayer(sc, t);
         QPointer<QObject> scp(sc);
+        g_tapSeqAsync = true;
         waitFor(scp, [scp, t] { return scp->property("currentLayer").toInt() == t; }, [x, y](bool ok) {
-            if (ok) QTimer::singleShot(150, qApp, [x, y] { doubleTapNow(x, y, true); });
+            if (!ok) { endTapSeq(); return; }
+            QTimer::singleShot(150, qApp, [x, y] { g_tapSeqAsync = false; doubleTapNow(x, y, true); });
         });
         return;
     }
@@ -456,7 +486,10 @@ void doubleTapNow(double x, double y, bool onText = false, bool edit = true) {
     if (!selectionToolActive()) {   // on an object, another tool: the selection tool first (selecting needs it)
         const bool switched = useSelectionTool();
         TLOG("double tap: on a text object, the selection tool %s", switched ? "turned on" : "could not be turned on");
-        if (switched) QTimer::singleShot(500, qApp, [x, y, onText] { doubleTapNow(x, y, onText); });
+        if (switched) {
+            g_tapSeqAsync = true;
+            QTimer::singleShot(500, qApp, [x, y, onText, edit] { g_tapSeqAsync = false; doubleTapNow(x, y, onText, edit); });
+        }
         return;
     }
     if (!sel.isEmpty()) {
@@ -491,10 +524,13 @@ void doubleTapNow(double x, double y, bool onText = false, bool edit = true) {
     if (onText && !crossed) {   // nothing but objects on the Text objects layer: one rect selects it, then the edit box
         QPointer<QObject> scp(sc);
         selectRect(sc, hit->box.toAlignedRect().adjusted(-2, -2, 2, 2), 0);
-        if (edit)
+        if (edit) {
+            g_tapSeqAsync = true;
             QTimer::singleShot(250, sc, [scp] {
+                TapSeqStep step;
                 if (scp && scp->property("selectionItemCount").toInt() > 0) editSelectedObjects(true);
             });
+        }
         return;
     }
     endSelection(sc, dv);
@@ -502,8 +538,11 @@ void doubleTapNow(double x, double y, bool onText = false, bool edit = true) {
     QPointer<QQuickItem> dvp(dv);
     const QList<QRect> rects = po.rects;
     const QList<int> members = hit->members;
+    g_tapSeqAsync = true;
     QTimer::singleShot(250, sc, [scp, dvp, rects, members, pageId, edit] {
+        if (!scp) { endTapSeq(); return; }
         setSelection(scp, rects, members, [scp, dvp, pageId, edit] {
+            TapSeqStep step;
             // a stroke drawn across the object encloses some of its strokes and cannot be left out: editing would
             // delete it too, so say so (the edit needs the object alone, or with its marks)
             if (!scp || !dvp) return;

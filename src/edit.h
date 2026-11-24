@@ -43,6 +43,7 @@ QString pageSig(QObject *sc);
 bool freePlace(const QRectF &box, const QList<QRectF> &others, QPointF *offset);
 QList<QRectF> textBoxesOf(const QString &page);
 void forgetTextBox(const QString &page, const QRectF &box);
+void requestBoxes();
 void switchLayer(QObject *sc, int to);
 int textObjectsAt(const QString &page, const QPointF &at, QRectF *box);
 void waitFor(QPointer<QObject> scp, std::function<bool()> cond, std::function<void(bool)> next, int tries);
@@ -141,6 +142,7 @@ void placeOnTextLayer(QPointer<QObject> scp, const QString &page, const QRectF &
     }
     setSelection(scp, all, mine, [scp, page, box, off, text] {
         g_putting = false;
+        requestBoxes();
         if (!scp || off.isNull()) return;
         g_pushing = true;
         QMetaObject::invokeMethod(scp, "moveSelectedItems", Qt::DirectConnection, Q_ARG(int, text), Q_ARG(QPointF, off));
@@ -223,7 +225,7 @@ void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k, cons
         sc->qt_metacall(QMetaObject::InvokeMetaMethod, add, a3);
         TLOG("new ink: %d strokes in one undo step (%d checks)%s", k, tries + 1, toText ? ", on the text layer" : "");
         pushGroup(sc, page, g_putSteps + 1, false, toText ? QList<QRectF>{box} : QList<QRectF>{});
-        if (!toText) g_putting = false;   // done (onto the Text objects layer: placeOnTextLayer ends it)
+        if (!toText) { g_putting = false; requestBoxes(); }   // done (onto the Text objects layer: placeOnTextLayer ends it)
         if (toText) {
             // cloneAddAndSelectItems leaves the object selected on the Text objects layer while the writing layer is
             // current: xochitl never commits a move of that selection (device, f1b714c2: it jumped back). So the Text
@@ -423,6 +425,7 @@ QElapsedTimer g_anyUserStep;   // the user's last undo or redo (select.h: undo/r
 //   real step (scratch probe, 3 of 3; without it 1 of 3).
 void aboutToUndoRedo(bool undo) {
     if (g_own > 0) return;
+    requestBoxes();   // read once this press is done
     g_anyUserStep.start();
     QString page;
     QObject *sc = pageScene(&page);
@@ -687,6 +690,13 @@ void showInkEditBox(QQuickItem *dv, InkEdit e, const QString &title, const QStri
 void openObjectEdit(QQuickItem *dv, QObject *sc, QObject *ph, const PageObjects &po, QList<Placement> objs,
                     const QList<int> &marks = {}) {
     if (objs.isEmpty() || g_edit.box) return;
+    if (objs.size() > 1 && sc->property("currentLayer").toInt() == textLayer(sc)) {
+        // object mode: several objects move and resize together, one is edited at a time (developer, #3); joining
+        // objects into one edit stays on the other layers
+        showHint(dv, QStringLiteral("Several text objects are selected: double tap one to edit it."));
+        TLOG("edit: %lld objects selected on the text layer: not edited", (long long)objs.size());
+        return;
+    }
     std::sort(objs.begin(), objs.end(), [](const Placement &a, const Placement &b) { return a.box.top() < b.box.top(); });
     const QString pageId = dv->property("currentPageId").toString();
     g_langHint.clear();   // the text decides (a hint from an earlier conversion does not apply)

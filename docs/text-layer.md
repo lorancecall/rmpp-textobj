@@ -98,7 +98,14 @@ An edit on T (T current) is A', B' on T: one group of 2.
   selections too), never after an undo or redo, never on a pick in the layers menu.
 - Single finger taps on other layers do nothing (a palm or finger while writing).
 
-Planned: dashed boxes on every object, lasso multi-selects (edit off for more than one).
+- A dashed box around every object while T is current (plain Rectangles over DeviceSceneView; a Canvas painted
+  nothing, probed). The boxes are read from the page when its content may have changed (layer change, selection
+  end, undo/redo, conversion, edit) and mapped with `sceneToView` whenever the view moves (`viewportChanged`,
+  `viewScaleChanged`, `scrollPositionChanged`); hidden while `gesturing`.
+- Lasso several objects: they move and resize together (one pending edit, one step). Edit is refused for more than
+  one object on T ("double tap one to edit it"); joining objects into one edit stays on other layers.
+- A tool change during our own tap sequence (tool, layer, selection, edit box) is ours: it is looked at once when the
+  sequence ends (no time windows; a 5 s cap only as a fail-safe).
 
 ### Objects kept apart
 
@@ -108,9 +115,12 @@ Planned: dashed boxes on every object, lasso multi-selects (edit off for more th
 - Checked again on T with its real strokes once the conversion switched there (the known boxes may be old): still
   overlapping, the object is selected and pushed (moveSelectedItems + applyPendingEdit, one more step in the
   conversion's group); no room near, the whole conversion group is undone (a message).
-- A move or resize on Text objects (on lift): pushed the same way inside the same pending edit, so the move and the
-  push are one step (`moveSelectedItems` adds to the pending edit: probed). With no room near, the move is put back
-  (`cancelPendingEdit`: no step, probed).
+- A move or resize on Text objects: pushed the same way inside the same pending edit, so the move and the push are
+  one step (`moveSelectedItems` adds to the pending edit: probed). It waits for the pen to be up after the last
+  change (`penHandler.timeSincePenUp()` restarts at each lift: probed). A selected group is pushed as one block,
+  each object checked against the others' boxes (not one box around the group). With no room near for all of
+  them, the move is put back (`cancelPendingEdit`: no step, probed) and the selection ended (a further move of it
+  after a cancel is not committed: probed).
 - An undo of a conversion drops its box from `textlayer.json`, and a redo puts it back, so an undone object does not
   push the next one.
 
@@ -209,6 +219,13 @@ On a fresh notebook:
 14. On Text objects, tap on no object (or lasso nothing): Layer 1 current; one undo: back on Text objects together
     with the step before.
 15. On Layer 1, single taps do nothing.
+16. Text objects current: a dashed box on every object; Layer 1 current: none.
+17. Zoom and scroll: the boxes follow once the view is still.
+18. Lasso two objects, move: both move; one undo puts both back.
+19. Move a group onto another object: pushed as a block; no room: all put back (nothing to undo).
+20. A group around an unselected object, nudged: not pushed.
+21. Double tap with two objects selected on Text objects: the message, no edit box.
+22. Nudge one object by less than its own size: it stays where it was put.
 
 ## Log lines (`journalctl -u xochitl | grep rmpp-textobj`)
 

@@ -282,6 +282,7 @@ void textobjInit() {
         watchLayers();
         watchLayersMenu();
         installTapOverlay();
+        installBoxOverlay();
         closeStaleInkEdit();
         closeStaleAddPlace();
         checkErasedObjects();

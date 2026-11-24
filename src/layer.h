@@ -248,36 +248,64 @@ int textObjectsAt(const QString &page, const QPointF &at, QRectF *box = nullptr)
 bool g_moved = false;   // a selection was moved or resized: one step when it ends
 
 // ---- objects kept apart (developer, #3) ----
-// The nearest place for `box` where it overlaps none of `others` (each kept 6 px away): the offset 0 when it is free,
-// else the smallest shift up, down, left or right, at most the box's own size. False: no room near.
-bool freePlace(const QRectF &box, const QList<QRectF> &others, QPointF *offset) {
-    auto hits = [&](const QRectF &b) -> const QRectF * {
-        for (const QRectF &o : others) if (b.intersects(o.adjusted(-6, -6, 6, 6))) return &o;
-        return nullptr;
+// The nearest place for the boxes in `moving` (one object, or a selected group moved as one block) where none of them
+// overlaps any of `others` (each kept 6 px away): the offset 0 when they are free, else the smallest shift up, down,
+// left or right, at most the largest member's size. False: no room near (all or nothing for a group: developer).
+bool freePlace(const QList<QRectF> &moving, const QList<QRectF> &others, QPointF *offset) {
+    auto hit = [&](const QPointF &d, QRectF *m, QRectF *o) {
+        for (const QRectF &mv : moving)
+            for (const QRectF &ot : others)
+                if (mv.translated(d).intersects(ot.adjusted(-6, -6, 6, 6))) { *m = mv.translated(d); *o = ot; return true; }
+        return false;
     };
-    if (!hits(box)) { *offset = QPointF(); return true; }
-    const double reach = qMax(box.width(), box.height());
+    QRectF m, o;
+    if (!hit(QPointF(), &m, &o)) { *offset = QPointF(); return true; }
+    double reach = 0;
+    for (const QRectF &mv : moving) reach = qMax(reach, qMax(mv.width(), mv.height()));
     bool found = false;
     QPointF best;
     for (int dir = 0; dir < 4; ++dir) {
         QPointF d;
-        for (int step = 0; step < 20; ++step) {   // push past whatever is in the way, again until it is free
-            const QRectF *o = hits(box.translated(d));
-            if (!o) {
+        for (int step = 0; step < 40; ++step) {   // push past whatever is in the way, again until all is free
+            if (!hit(d, &m, &o)) {
                 if (!found || QLineF(QPointF(), d).length() < QLineF(QPointF(), best).length()) best = d;
                 found = true;
                 break;
             }
-            const QRectF b = box.translated(d), r = o->adjusted(-7, -7, 7, 7);
-            if (dir == 0) d.rx() += r.right() - b.left();
-            else if (dir == 1) d.rx() -= b.right() - r.left();
-            else if (dir == 2) d.ry() += r.bottom() - b.top();
-            else d.ry() -= b.bottom() - r.top();
+            const QRectF r = o.adjusted(-7, -7, 7, 7);
+            if (dir == 0) d.rx() += r.right() - m.left();
+            else if (dir == 1) d.rx() -= m.right() - r.left();
+            else if (dir == 2) d.ry() += r.bottom() - m.top();
+            else d.ry() -= m.bottom() - r.top();
             if (QLineF(QPointF(), d).length() > reach) break;
         }
     }
     *offset = best;
     return found;
+}
+bool freePlace(const QRectF &box, const QList<QRectF> &others, QPointF *offset) {
+    return freePlace(QList<QRectF>{box}, others, offset);
+}
+
+// The Text objects layer's objects as boxes, split into the selected ones and the others; strokes of no object count
+// one by one. While a move is pending the selected strokes are already where they are being moved (probed).
+void objectBoxes(QObject *sc, const QString &page, QList<QRectF> *selected, QList<QRectF> *others) {
+    const PageObjects po = findObjects(sc, page, false);
+    QSet<QString> selKeys;
+    for (const QRect &r : lineRects(sc)) selKeys.insert(rectKey(r));
+    QSet<int> covered;
+    for (const Placement &p : po.found) {
+        int in = 0;
+        for (int m : p.members) if (m >= 0) { covered.insert(m); if (selKeys.contains(rectKey(po.rects[m]))) ++in; }
+        if (in > 0 && selected) *selected << p.box;
+        else if (in == 0 && others) *others << p.box;
+    }
+    for (int i = 0; i < po.rects.size(); ++i) {
+        if (covered.contains(i)) continue;
+        const bool sel = selKeys.contains(rectKey(po.rects[i]));
+        if (sel && selected) *selected << QRectF(po.rects[i]);
+        else if (!sel && others) *others << QRectF(po.rects[i]);
+    }
 }
 
 // A selection on the Text objects layer moved or resized (on lift): if it would overlap another object there, it is
@@ -287,29 +315,48 @@ bool g_pushing = false;
 void keepApartAfterMove(QObject *sc) {
     const int t = textLayer(sc);
     if (t < 0 || sc->property("currentLayer").toInt() != t || g_edit.box || putting()) return;
-    const QTransform pe = sc->property("pendingEdit").value<QTransform>();
-    if (pe.isIdentity()) return;
-    const QList<QRect> sel = lineRects(sc);   // the selected strokes, where they were
-    if (sel.isEmpty()) return;
-    // everything else on the layer: pageLineRects adds the selection back where it was, so it is left out by key
-    // (else a short move collided with the object's own old place: review of b5a5882)
-    QSet<QString> selKeys;
-    for (const QRect &r : sel) selKeys.insert(rectKey(r));
-    QList<QRectF> others;
-    for (const QRect &r : pageLineRects(sc)) if (!selKeys.contains(rectKey(r))) others << QRectF(r);
-    const QRectF moved = pe.mapRect(QRectF(unite(sel)));
+    if (sc->property("pendingEdit").value<QTransform>().isIdentity()) return;
+    QQuickItem *dv = documentView();
+    const QString page = dv ? dv->property("currentPageId").toString() : QString();
+    QList<QRectF> moving, others;
+    objectBoxes(sc, page, &moving, &others);
+    if (moving.isEmpty()) return;
     QPointF off;
     g_pushing = true;
-    if (!freePlace(moved, others, &off)) {
-        QMetaObject::invokeMethod(sc, "cancelPendingEdit");
-        g_moved = false;   // no step: nothing to group when the selection ends
-        if (QQuickItem *dv = documentView()) showHint(dv, QStringLiteral("No room for the text object there: put back."));
-        TLOG("move on the text layer: no room near: put back");
+    if (!freePlace(moving, others, &off)) {
+        // put back with no step; the selection is ended (a further move of it after a cancel is not committed:
+        // probed), the user selects again
+        QMetaObject::invokeMethod(sc, "cancelPendingEdit", Qt::DirectConnection);
+        g_moved = false;
+        QMetaObject::invokeMethod(sc, "clearSelectedItems", Qt::DirectConnection);
+        if (dv) showHint(dv, QStringLiteral("No room for the text object there: put back."));
+        TLOG("move on the text layer: no room near (%lld object(s)): put back", (long long)moving.size());
     } else if (!off.isNull()) {
-        QMetaObject::invokeMethod(sc, "moveSelectedItems", Q_ARG(int, t), Q_ARG(QPointF, off));
-        TLOG("move on the text layer: pushed %.0f, %.0f off another object", off.x(), off.y());
+        QMetaObject::invokeMethod(sc, "moveSelectedItems", Qt::DirectConnection, Q_ARG(int, t), Q_ARG(QPointF, off));
+        TLOG("move on the text layer: %lld object(s) pushed %.0f, %.0f off others", (long long)moving.size(), off.x(), off.y());
     }
-    QTimer::singleShot(0, qApp, [] { g_pushing = false; });
+    QTimer::singleShot(0, qApp, [] { g_pushing = false; requestBoxes(); });
+}
+
+// The push waits for the pen to be up after the last change of the move: pendingEditChanged can come before the
+// lift (probed: twice, 160 ms apart), and penHandler.timeSincePenUp() restarts at every lift (probed).
+QElapsedTimer g_lastPendingChange;
+bool g_pushWait = false;   // one wait at a time; it reads the latest change when it looks
+void pushWhenPenUp(int tries) {
+    QString pg;
+    QObject *s = pageScene(&pg);
+    QQuickItem *dv = documentView();
+    QObject *ph = dv ? dv->property("penHandler").value<QObject *>() : nullptr;
+    if (!s) { g_pushWait = false; return; }
+    qulonglong sinceUp = 0;
+    const bool known = ph && QMetaObject::invokeMethod(ph, "timeSincePenUp", Qt::DirectConnection, Q_RETURN_ARG(qulonglong, sinceUp));
+    const qint64 sinceChange = g_lastPendingChange.isValid() ? g_lastPendingChange.elapsed() : 0;
+    if (known && qint64(sinceUp) > sinceChange + 100 && tries < 100) {   // still down since before the change
+        QTimer::singleShot(80, qApp, [tries] { pushWhenPenUp(tries + 1); });
+        return;
+    }
+    g_pushWait = false;
+    keepApartAfterMove(s);
 }
 
 // ---- switching ----
@@ -352,6 +399,7 @@ void layerChanged() {
     QString page;
     QObject *sc = pageScene(&page);
     if (!sc) return;
+    requestBoxes();
     if (g_ownLayerSwitch > 0) --g_ownLayerSwitch;
     const int t = textLayer(sc), cur = sc->property("currentLayer").toInt();
     if (t >= 0 && cur == t) {
@@ -363,21 +411,15 @@ void layerChanged() {
 
 // Choosing another tool while the Text objects layer is current: the writing layer current first, so ink never goes
 // there (the selection tool's selected property turning false).
-void toolChanged(int tries = 0) {
+void toolChanged() {
     QString page;
     QObject *sc = pageScene(&page);
-    if (!sc || g_edit.box || putting() || selectionToolActive()) return;
+    if (!sc || g_edit.box || putting() || tapSequence() || selectionToolActive()) return;
     const int t = textLayer(sc);
     if (t < 0 || sc->property("currentLayer").toInt() != t) return;
     const int w = writingLayer(sc);
     if (w < 0) return;
-    // the tool must stay off for a moment: it flickered off while a double tap was turning it on, and the object
-    // then vanished from the screen with its selection on a layer no longer current (device, c67d0d58)
-    // (only right after our own double tap: a pen chosen otherwise switches at once, so no ink lands on this layer)
-    if (tries == 0 && g_lastDoubleTap.isValid() && g_lastDoubleTap.elapsed() < 1500) {
-        QTimer::singleShot(300, qApp, [] { toolChanged(1); });
-        return;
-    }
+    // (our own tap sequence turning the tool on is not the user's choice: tapSequence(), select.h)
     if (sc->property("selectionItemCount").toInt() > 0) {   // ended here, a pending move kept (probed: a clear drops it)
         if (!sc->property("pendingEdit").value<QTransform>().isIdentity())
             QMetaObject::invokeMethod(sc, "applyPendingEdit", Qt::DirectConnection, Q_ARG(int, t));
@@ -420,18 +462,14 @@ void watchLayers() {
         if (!s || adjusting() || g_own > 0 || g_pushing) return;
         if (s->property("pendingEdit").value<QTransform>().isIdentity()) return;
         g_moved = true;
-        // once the pen is up (no further change for a moment), kept apart from the other objects
-        static QTimer *settle = nullptr;
-        if (!settle) {
-            settle = new QTimer(qApp);
-            settle->setSingleShot(true);
-            settle->setInterval(150);
-            QObject::connect(settle, &QTimer::timeout, qApp, [] { QString pg; if (QObject *s2 = pageScene(&pg)) keepApartAfterMove(s2); });
-        }
-        settle->start();
+        g_lastPendingChange.start();
+        if (g_pushWait) return;
+        g_pushWait = true;
+        QTimer::singleShot(0, qApp, [] { pushWhenPenUp(0); });
     });
     hook(sc, "rootDocumentLengthChanged()", [] { if (!putting() && g_own == 0) groupsUnknown("typed text"); });
     hook(sc, "selectionCleared()", [] {
+        requestBoxes();
         if (g_moved) {
             g_moved = false;
             QString p;
@@ -470,6 +508,103 @@ void watchLayers() {
             useSelectionTool();
         }
     });
+}
+
+// ---- object mode: a dashed box on every object of the Text objects layer (developer, #3) ----
+// Only while that layer is current. The boxes are read from the page (findObjects) when its content may have changed,
+// kept in page units, and mapped to the view (DeviceSceneView.sceneToView) whenever the view moves; hidden while a
+// gesture moves it. Plain Rectangles: a Canvas painted nothing on the device (probed).
+const char *kBoxesQml = R"QML(
+import QtQuick
+Item {
+    id: layer
+    property var boxes: []
+    anchors.fill: parent
+    z: 40
+    enabled: false
+    Repeater {
+        model: layer.boxes
+        Item {
+            x: modelData.x - 4; y: modelData.y - 4; width: modelData.width + 8; height: modelData.height + 8
+            Repeater {   // top and bottom edges
+                model: Math.max(1, Math.floor(parent.width / 16)) * 2
+                Rectangle {
+                    readonly property int n: Math.max(1, Math.floor(parent.width / 16))
+                    x: (index % n) * 16; y: index < n ? 0 : parent.height - 2
+                    width: 9; height: 2; color: "black"
+                }
+            }
+            Repeater {   // left and right edges
+                model: Math.max(1, Math.floor(parent.height / 16)) * 2
+                Rectangle {
+                    readonly property int n: Math.max(1, Math.floor(parent.height / 16))
+                    y: (index % n) * 16; x: index < n ? 0 : parent.width - 2
+                    width: 2; height: 9; color: "black"
+                }
+            }
+        }
+    }
+}
+)QML";
+QPointer<QObject> g_boxesItem;
+QList<QRectF> g_pageBoxes;   // page units
+
+void mapBoxes() {
+    QQuickItem *dv = documentView();
+    QQuickItem *sv = dv ? sceneViewOf(dv) : nullptr;
+    if (!g_boxesItem || !sv) return;
+    QVariantList out;
+    if (!sv->property("gesturing").toBool())
+        for (const QRectF &b : g_pageBoxes) {
+            QVariant a, c;
+            QMetaObject::invokeMethod(sv, "sceneToView", Q_RETURN_ARG(QVariant, a), Q_ARG(QVariant, QVariant(b.topLeft())));
+            QMetaObject::invokeMethod(sv, "sceneToView", Q_RETURN_ARG(QVariant, c), Q_ARG(QVariant, QVariant(b.bottomRight())));
+            if (a.canConvert<QJSValue>()) a = a.value<QJSValue>().toVariant();
+            if (c.canConvert<QJSValue>()) c = c.value<QJSValue>().toVariant();
+            if (!a.canConvert<QPointF>() || !c.canConvert<QPointF>()) continue;
+            out << QVariant(QRectF(a.toPointF(), c.toPointF()).normalized());
+        }
+    g_boxesItem->setProperty("boxes", out);
+}
+
+void readBoxesNow() {
+    QString page;
+    QObject *sc = pageScene(&page);
+    g_pageBoxes.clear();
+    const int t = sc ? textLayer(sc) : -1;
+    if (sc && t >= 0 && sc->property("currentLayer").toInt() == t && !g_edit.box && !putting())
+        for (const Placement &p : findObjects(sc, page, false).found) g_pageBoxes << p.box;
+    mapBoxes();
+}
+
+// Coalesced: many changes in one turn of the event loop read the page once.
+void requestBoxes() {
+    static bool queued = false;
+    if (queued) return;
+    queued = true;
+    QTimer::singleShot(0, qApp, [] { queued = false; readBoxesNow(); });
+}
+
+void installBoxOverlay() {
+    QQuickItem *dv = documentView();
+    QQuickItem *sv = dv ? sceneViewOf(dv) : nullptr;
+    if (!sv) return;
+    if (!g_boxesItem || g_boxesItem->parent() != sv) {
+        if (g_boxesItem) g_boxesItem->deleteLater();
+        g_boxesItem = createWithState(sv, kBoxesQml, "TextBoxes");
+        requestBoxes();
+    }
+    if (sv->property("_rmppTextobjBoxes").toBool()) return;
+    sv->setProperty("_rmppTextobjBoxes", true);
+    for (const char *sig : {"viewportChanged()", "viewScaleChanged()", "scrollPositionChanged()", "gesturingChanged()",
+                            "zoomModeChanged()"}) {
+        const int i = sv->metaObject()->indexOfSignal(sig);
+        if (i < 0) continue;
+        auto *h = new SignalHook;
+        h->setParent(sv);
+        h->fn = [] { mapBoxes(); };
+        QMetaObject::connect(sv, i, h, QObject::staticMetaObject.methodCount(), Qt::DirectConnection, nullptr);
+    }
 }
 
 // ---- the layers menu ----
