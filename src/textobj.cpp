@@ -266,6 +266,8 @@ void textobjInit() {
             placeTextObject(cmd.section(QLatin1Char(':'), 1, 1).toDouble(), cmd.section(QLatin1Char(':'), 2, 2).toDouble());
         else if (cmd == QLatin1String("inkok")) finishInkEdit(true);
         else if (cmd == QLatin1String("inkcancel")) finishInkEdit(false);
+        else if (cmd.startsWith(QLatin1String("stap:")))
+            singleTapAt(cmd.section(QLatin1Char(':'), 1, 1).toDouble(), cmd.section(QLatin1Char(':'), 2, 2).toDouble());
         else if (cmd.startsWith(QLatin1String("dtap:")))
             doubleTapAt(cmd.section(QLatin1Char(':'), 1, 1).toDouble(), cmd.section(QLatin1Char(':'), 2, 2).toDouble());
     });

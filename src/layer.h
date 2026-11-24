@@ -320,6 +320,19 @@ void switchLayer(QObject *sc, int to) {
     });
 }
 
+// Object mode ended by the user with nothing selected (a tap on no object, a lasso or pen tap that selected nothing):
+// the writing layer current again, one undo group with the step before it (developer, #3: writing and the lasso on the
+// handwriting did not work while the Text objects layer stayed current). Never from a selection merely ending: a new
+// lasso and our own flows end selections too.
+void backToWriting(QObject *sc, const char *why) {
+    const int t = textLayer(sc), w = writingLayer(sc);
+    if (t < 0 || w < 0 || sc->property("currentLayer").toInt() != t) return;
+    if (sc->property("selectionItemCount").toInt() > 0) QMetaObject::invokeMethod(sc, "clearSelectedItems");
+    readTextBoxes(sc);
+    TLOG("text layer: %s: layer %d current for writing", why, w + 1);
+    switchLayer(sc, w);
+}
+
 // The current layer changed: the Text objects layer current (by any cause) turns on the selection tool (not a step);
 // another layer current is remembered as the writing layer.
 void layerChanged() {
@@ -404,7 +417,19 @@ void watchLayers() {
         QTimer::singleShot(700, qApp, [] { QString p; if (QObject *s = pageScene(&p)) readTextBoxes(s); });
     });
     if (QObject *ph = dv->property("penHandler").value<QObject *>())
-        hook(ph, "strokeCompleted()", [] { if (!selectionToolActive() && !putting()) groupsUnknown("a pen stroke"); });
+        hook(ph, "strokeCompleted()", [] {
+            if (!selectionToolActive()) { if (!putting()) groupsUnknown("a pen stroke"); return; }
+            // a lasso or pen tap on the Text objects layer that ends with nothing selected: back to writing (the
+            // selection settles a moment after the stroke)
+            QTimer::singleShot(400, qApp, [] {
+                QString p;
+                QObject *s = pageScene(&p);
+                if (!s || putting() || adjusting() || g_edit.box || !selectionToolActive()) return;
+                const int t = textLayer(s);
+                if (t < 0 || s->property("currentLayer").toInt() != t || s->property("selectionItemCount").toInt() > 0) return;
+                backToWriting(s, "a lasso that selected nothing");
+            });
+        });
     hook(dv, "currentPageIdChanged()", [] { groupsUnknown("another page"); });
     if (QQuickItem *tool = selectionToolButton())
         if (!tool->property("_rmppTextobjTool").toBool()) {

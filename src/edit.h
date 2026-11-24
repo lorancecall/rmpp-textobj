@@ -100,6 +100,55 @@ void pushGroup(QObject *sc, const QString &page, int n, bool merge, const QList<
 
 int g_putSteps = 0;   // steps of the action being put before its new ink is added (handwriting deleted, layer made)
 
+// After a conversion, on the Text objects layer (its strokes readable now): the object is checked against the other
+// objects there (the known boxes used before may be old). Overlapping: pushed to the nearest free place in the same
+// undo group (a move of the selection, applied: one more step); no room near: the whole conversion is undone. Then
+// the object is left selected.
+extern bool g_pushing;   // layer.h
+void placeOnTextLayer(QPointer<QObject> scp, const QString &page, const QRectF &box, const QSet<QString> &newKeys, int text) {
+    if (!scp || scp->property("currentLayer").toInt() != text) return;
+    const QList<QRect> all = pageLineRects(scp);
+    QList<int> mine;
+    QList<QRectF> others;
+    for (int i = 0; i < all.size(); ++i) {
+        if (newKeys.contains(rectKey(all[i]))) mine << i;
+        else others << QRectF(all[i]);
+    }
+    if (mine.size() != newKeys.size()) {   // not found exactly: select by its box, unchecked
+        TLOG("convert: the object not found exactly on the text layer (%lld of %lld): not checked",
+             (long long)mine.size(), (long long)newKeys.size());
+        if (textObjectsAt(page, box.center(), nullptr) <= 1) selectRect(scp, box.toAlignedRect().adjusted(-2, -2, 2, 2), 0);
+        return;
+    }
+    QPointF off;
+    if (!freePlace(box, others, &off)) {
+        if (!g_undoGroups.isEmpty() && g_undoGroups.last().page == page) {
+            const Group g = g_undoGroups.takeLast();
+            ownUndoRedo(scp, true, g.n);
+            g_redoGroups.append(g);
+            for (const QRectF &b : g.boxes) forgetTextBox(page, b);
+            TLOG("convert: no room near on the text layer: the conversion undone (%d steps)", g.n);
+        } else {
+            groupsUnknown("conversion without room");
+            TLOG("convert: no room near on the text layer, the conversion left (its group unknown)");
+        }
+        if (QQuickItem *dv = documentView()) showHint(dv, QStringLiteral("No room for the text object here: other text objects are in the way."));
+        return;
+    }
+    setSelection(scp, all, mine, [scp, page, box, off, text] {
+        if (!scp || off.isNull()) return;
+        g_pushing = true;
+        QMetaObject::invokeMethod(scp, "moveSelectedItems", Qt::DirectConnection, Q_ARG(int, text), Q_ARG(QPointF, off));
+        QMetaObject::invokeMethod(scp, "applyPendingEdit", Qt::DirectConnection, Q_ARG(int, text));
+        QTimer::singleShot(0, qApp, [] { g_pushing = false; });
+        pushGroup(scp, page, 2, true, {box.translated(off)});   // joins the conversion's group: n = 1 + its n
+        if (!g_undoGroups.isEmpty()) g_undoGroups.last().boxes.removeAll(box);
+        forgetTextBox(page, box);
+        rememberTextBox(page, box.translated(off));
+        TLOG("convert: pushed %.0f, %.0f off another object on the text layer", off.x(), off.y());
+    });
+}
+
 // One undo step for new ink (#6). addDrawingLine makes an undo step per stroke (a conversion took ~28 undos to
 // bring the handwriting back); SceneController::cloneAddAndSelectItems adds a list of items as one step, centred on a
 // point. So, once the new ink is recorded and selected: copy it, undo the k additions, check that exactly the new
@@ -109,6 +158,8 @@ void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k, cons
     QObject *sc = scp;
     if (!sc) return;
     if (k <= 1) { if (k == 1) pushGroup(sc, page, g_putSteps + 1, false); return; }   // one stroke: one step already
+    QSet<QString> newKeys;   // the new ink's strokes (selected now): the object found again on the Text objects layer
+    for (const QRect &r : lineRects(sc)) newKeys.insert(rectKey(r));
     const QMetaObject *mo = sc->metaObject();
     const int clone = mo->indexOfMethod("cloneSelectedItems(int,double)");
     const int bound = mo->indexOfMethod("getItemBoundingRect(QList<std::shared_ptr<SceneItem>>)");
@@ -132,7 +183,7 @@ void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k, cons
     // undo() right after ending a selection is ignored (device, OS 3.29.1), and takes effect a moment after it is
     // called: undo once the selection is gone, then wait until the new strokes are gone
     auto check = std::make_shared<std::function<void(int)>>();
-    *check = [scp, before, k, items, box, add, check, page](int tries) {
+    *check = [scp, before, k, items, box, add, check, page, newKeys](int tries) {
         QObject *sc = scp;
         if (!sc) return;
         int fresh = 0, kept = 0;
@@ -175,12 +226,9 @@ void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k, cons
             QMetaObject::invokeMethod(sc, "clearSelectedItems");
             useSelectionTool();
             switchLayer(sc, text);
-            waitFor(scp, [scp, text] { return scp->property("currentLayer").toInt() == text; }, [scp, page, box](bool ok) {
+            waitFor(scp, [scp, text] { return scp->property("currentLayer").toInt() == text; }, [scp, page, box, newKeys, text](bool ok) {
                 if (!ok || !scp) return;
-                if (textObjectsAt(page, box.center(), nullptr) > 1) return;   // another object there: one rect takes both
-                QTimer::singleShot(150, scp, [scp, box] {
-                    if (scp) selectRect(scp, box.toAlignedRect().adjusted(-2, -2, 2, 2), 0);
-                });
+                QTimer::singleShot(150, scp, [scp, page, box, newKeys, text] { placeOnTextLayer(scp, page, box, newKeys, text); });
             }, 0);
         }
     };

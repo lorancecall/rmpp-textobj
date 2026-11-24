@@ -90,14 +90,24 @@ An edit on T (T current) is A', B' on T: one group of 2.
   tool is turned on (not a step).
 - Choosing another tool there (the selection tool's `selected` turning false): the writing layer current again, one
   group with the step before it. Ink never goes onto T.
+- A single finger tap on an object: it is selected (no step); a second tap within 450 ms opens the edit box (the
+  double tap). The first finger of an undo/redo gesture is left alone (an undo or redo came with it).
+- Back to the writing layer when the user ends object mode with nothing selected: a finger tap on no object, or a
+  lasso or pen tap that selected nothing. One group with the step before it (the switch to T when nothing happened
+  there, else the move made there). Never because a selection merely ended (a new lasso and our own flows end
+  selections too), never after an undo or redo, never on a pick in the layers menu.
+- Single finger taps on other layers do nothing (a palm or finger while writing).
 
-Planned: dashed boxes on every object, a tap edits, drag moves, lasso multi-selects (edit off for more than one).
+Planned: dashed boxes on every object, lasso multi-selects (edit off for more than one).
 
 ### Objects kept apart
 
 - A conversion onto Text objects: if the new object would overlap a known object there, it is put at the nearest
   free place (up, down, left or right, at most its own size away). With no room near, nothing is converted (a
   message); nothing has changed by then.
+- Checked again on T with its real strokes once the conversion switched there (the known boxes may be old): still
+  overlapping, the object is selected and pushed (moveSelectedItems + applyPendingEdit, one more step in the
+  conversion's group); no room near, the whole conversion group is undone (a message).
 - A move or resize on Text objects (on lift): pushed the same way inside the same pending edit, so the move and the
   push are one step (`moveSelectedItems` adds to the pending edit: probed). With no room near, the move is put back
   (`cancelPendingEdit`: no step, probed).
@@ -193,6 +203,12 @@ On a fresh notebook:
 9. A tap where two objects overlap, or on an object crossed by another on Text objects: the overlap message.
 10. Undo with the toolbar button while an object is selected: a real undo every time (`undo/redo button: the
     selection ended first`).
+11. Convert next to (or over) an object: the new one lands beside it; no room near: not converted, message.
+12. Move an object onto another: pushed off it on lift; one undo puts it back where it was. No room: put back.
+13. On Text objects, single tap an object: selected; tap again quickly: the edit box.
+14. On Text objects, tap on no object (or lasso nothing): Layer 1 current; one undo: back on Text objects together
+    with the step before.
+15. On Layer 1, single taps do nothing.
 
 ## Log lines (`journalctl -u xochitl | grep rmpp-textobj`)
 

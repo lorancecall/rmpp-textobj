@@ -357,6 +357,7 @@ Item {
                 tobj.command = "dtap:" + p.x + ":" + p.y + "#" + now
             } else {
                 lastT = now; lastX = p.x; lastY = p.y
+                tobj.command = "stap:" + p.x + ":" + p.y + "#" + now   // a single tap (object mode only)
             }
         }
     }
@@ -385,10 +386,15 @@ bool viewToPage(QQuickItem *dv, const QPointF &p, QPointF *out);
 // the step before it), and the object is selected and edited there (onText). Where two or more objects overlap: a
 // short message, nothing else.
 int textObjectsAt(const QString &page, const QPointF &at, QRectF *box);   // layer.h
+int textLayer(QObject *sc);                                              // layer.h
 void switchLayer(QObject *sc, int to);                                   // layer.h
 void waitFor(QPointer<QObject> scp, std::function<bool()> cond, std::function<void(bool)> next, int tries = 0);   // layer.h
 
-void doubleTapNow(double x, double y, bool onText = false) {
+void backToWriting(QObject *sc, const char *why);   // layer.h
+
+// edit false: a single tap on the Text objects layer: the object there selected (no edit box), nothing there: back
+// to the writing layer.
+void doubleTapNow(double x, double y, bool onText = false, bool edit = true) {
     if (g_edit.box || putting() || adjusting()) {
         TLOG("double tap: busy (edit box %d, putting %d, adjusting %d)", g_edit.box ? 1 : 0, putting() ? 1 : 0, adjusting() ? 1 : 0);
         return;
@@ -417,6 +423,7 @@ void doubleTapNow(double x, double y, bool onText = false) {
     // was taken for a double tap, and the tool switched to the selection tool under the pen (developer, 6ad906ef).
     if (!hit) {
         const int t = textLayer(sc), cur = sc->property("currentLayer").toInt();
+        if (!edit) { backToWriting(sc, "a tap on no object"); return; }
         if (onText) { TLOG("double tap: no text object here on the text layer either"); return; }
         if (t < 0 || t == cur) { TLOG("double tap: not on a text object"); return; }
         const int n = textObjectsAt(pageId, at, nullptr);
@@ -456,7 +463,7 @@ void doubleTapNow(double x, double y, bool onText = false) {
         bool only = false;
         const QList<Placement> objs = selectedObjects(po, sel, &only);
         for (const Placement &p : objs)   // selected with nothing but objects and their marks: edit
-            if (p.rec == hit->rec && p.d == hit->d && only) { editSelectedObjects(); return; }
+            if (p.rec == hit->rec && p.d == hit->d && only) { if (edit) editSelectedObjects(); return; }
     }
     // not selected, or selected with other handwriting: select this object alone
     g_lastDoubleTap.start();
@@ -481,12 +488,13 @@ void doubleTapNow(double x, double y, bool onText = false) {
             }
         if (crossed) break;
     }
-    if (onText) {   // nothing but objects on the Text objects layer: one rect selects it, then the edit box
+    if (onText && !crossed) {   // nothing but objects on the Text objects layer: one rect selects it, then the edit box
         QPointer<QObject> scp(sc);
         selectRect(sc, hit->box.toAlignedRect().adjusted(-2, -2, 2, 2), 0);
-        QTimer::singleShot(250, sc, [scp] {
-            if (scp && scp->property("selectionItemCount").toInt() > 0) editSelectedObjects(true);
-        });
+        if (edit)
+            QTimer::singleShot(250, sc, [scp] {
+                if (scp && scp->property("selectionItemCount").toInt() > 0) editSelectedObjects(true);
+            });
         return;
     }
     endSelection(sc, dv);
@@ -494,8 +502,8 @@ void doubleTapNow(double x, double y, bool onText = false) {
     QPointer<QQuickItem> dvp(dv);
     const QList<QRect> rects = po.rects;
     const QList<int> members = hit->members;
-    QTimer::singleShot(250, sc, [scp, dvp, rects, members, pageId] {
-        setSelection(scp, rects, members, [scp, dvp, pageId] {
+    QTimer::singleShot(250, sc, [scp, dvp, rects, members, pageId, edit] {
+        setSelection(scp, rects, members, [scp, dvp, pageId, edit] {
             // a stroke drawn across the object encloses some of its strokes and cannot be left out: editing would
             // delete it too, so say so (the edit needs the object alone, or with its marks)
             if (!scp || !dvp) return;
@@ -511,7 +519,7 @@ void doubleTapNow(double x, double y, bool onText = false) {
                 showHint(dvp, onT ? QStringLiteral("Text objects overlap here.")
                                   : QStringLiteral("Handwriting over this text object is selected with it. Move it off to edit the text."));
             }
-            else editSelectedObjects(true);   // a double tap edits the object right away (developer, #3)
+            else if (edit) editSelectedObjects(true);   // a double tap edits the object right away (developer, #3)
         });
     });
 }
@@ -526,7 +534,35 @@ void doubleTapAt(double x, double y) {
     TLOG("double tap seen at %.0f, %.0f", x, y);
     QTimer::singleShot(350, qApp, [x, y] {
         if (g_anyUserStep.isValid() && g_anyUserStep.elapsed() < 800) { TLOG("double tap: an undo/redo gesture, left alone"); return; }
-        doubleTapNow(x, y);
+        auto go = std::make_shared<std::function<void(int)>>();
+        *go = [x, y, go](int tries) {   // the first tap's selection may still be settling (single tap, below)
+            if (adjusting() && tries < 6) { QTimer::singleShot(300, qApp, [go, tries] { (*go)(tries + 1); }); return; }
+            doubleTapNow(x, y);
+        };
+        (*go)(0);
+    });
+}
+
+// A single finger tap (developer, #3). Object mode only (the Text objects layer current): the object there is
+// selected, a tap on no object goes back to the writing layer. On other layers nothing (a palm or finger while
+// writing). The first finger of an undo/redo gesture also arrives as a tap: left alone when an undo or redo came with
+// it (selecting would make xochitl spend that undo on the selection, probed).
+void singleTapAt(double x, double y) {
+    if (x < 130 && findAnywhere([](QQuickItem *i) { return i->objectName() == QLatin1String("undoButton") && i->isVisible(); }))
+        return;
+    QQuickItem *dv = documentView();
+    QObject *sc = dv ? dv->property("sceneController").value<QObject *>() : nullptr;
+    if (!sc || g_edit.box || putting() || adjusting()) return;
+    const int t = textLayer(sc);
+    if (t < 0 || sc->property("currentLayer").toInt() != t) return;
+    QTimer::singleShot(250, qApp, [x, y] {
+        if (g_anyUserStep.isValid() && g_anyUserStep.elapsed() < 600) return;
+        if (g_lastDoubleTap.isValid() && g_lastDoubleTap.elapsed() < 600) return;
+        QQuickItem *dv2 = documentView();
+        QObject *sc2 = dv2 ? dv2->property("sceneController").value<QObject *>() : nullptr;
+        if (!sc2 || g_edit.box || putting() || adjusting() || sc2->property("currentLayer").toInt() != textLayer(sc2)) return;
+        TLOG("single tap at %.0f, %.0f on the text layer", x, y);
+        doubleTapNow(x, y, true, false);
     });
 }
 
