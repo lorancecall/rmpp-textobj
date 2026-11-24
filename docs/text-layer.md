@@ -98,7 +98,8 @@ An edit on T (T current) is A', B' on T: one group of 2.
   selections too), never after an undo or redo, never on a pick in the layers menu.
 - Single finger taps on other layers do nothing (a palm or finger while writing).
 
-- A dashed box around every object while T is current (plain Rectangles over DeviceSceneView; a Canvas painted
+- A dashed box around every object while T is current and was chosen in the layers panel (not when a conversion or a
+  double tap made it current) (plain Rectangles over DeviceSceneView; a Canvas painted
   nothing, probed). The boxes are read from the page when its content may have changed (layer change, selection
   end, undo/redo, conversion, edit) and mapped with `sceneToView` whenever the view moves (`viewportChanged`,
   `viewScaleChanged`, `scrollPositionChanged`); hidden while `gesturing`.
@@ -219,7 +220,8 @@ On a fresh notebook:
 14. On Text objects, tap on no object (or lasso nothing): Layer 1 current; one undo: back on Text objects together
     with the step before.
 15. On Layer 1, single taps do nothing.
-16. Text objects current: a dashed box on every object; Layer 1 current: none.
+16. Text objects chosen in the layers panel: a dashed box on every object; Layer 1 current, or T made current by a
+    conversion or a double tap: none.
 17. Zoom and scroll: the boxes follow once the view is still.
 18. Lasso two objects, move: both move; one undo puts both back.
 19. Move a group onto another object: pushed as a block; no room: all put back (nothing to undo).
