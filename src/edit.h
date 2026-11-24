@@ -862,9 +862,9 @@ QColor highlightColour(int c, uint argb) {
     case 4: return QColor(0xac, 0xff, 0x85);
     case 5: return QColor(0xdb, 0x91, 0xe6);   // as the device paints it (sampled 2026-11-24)
     case 14: return QColor(0x8f, 0xd1, 0xff);
-    case 15: return QColor(0xff, 0xc8, 0x70);
+    case 15: return QColor(0xff, 0xc3, 0x8c);   // sampled 2026-11-24
     case 16: return QColor(0xc8, 0xc8, 0xc8);
-    default: return QColor(0xff, 0xf2, 0x75);
+    default: return QColor(0xff, 0xed, 0x75);   // sampled 2026-11-24
     }
 }
 

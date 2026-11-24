@@ -13,6 +13,9 @@
   band over the characters it covers, in its colour, on the Text objects layer with the object: it is selected,
   moved, copied and deleted with it, and editing the text draws it again on the same characters (text inserted
   before it moves it; its text deleted removes it). One undo takes the band back.
+- **Over typed text**: a text object may lie over typed text (it is not pushed away). There the object comes
+  first: a highlighter stroke on the object highlights the object, not the typed text under it, and a double tap
+  selects the object.
 - **Highlights in the edit box**: the Highlight button works as bold does in a word processor: on, what you type is
   highlighted; with characters selected, it turns their highlight on or off. The square next to it picks the colour.
   The preview shows the highlights as they will be drawn. (The eraser on your writing layer does not reach the

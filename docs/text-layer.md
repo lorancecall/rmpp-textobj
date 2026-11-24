@@ -125,6 +125,36 @@ An edit on T (T current) is A', B' on T: one group of 2.
 - An undo of a conversion drops its box from `textlayer.json`, and a redo puts it back, so an undone object does not
   push the next one.
 
+### Highlights (bands)
+
+- A highlighter stroke over an object on the writing layer becomes bands on T (`highlightToTextLayer`): the stroke
+  is undone, one band per line (end to end over the characters, em-box high) is drawn on T in the stroke's colour, the
+  highlight is kept in the object's record (character range, colour). One undo press takes the bands back (a group
+  of the bands plus the layer switches around them: `setCurrentLayer` and each visibility change are steps).
+- Bands are part of their object: they move with it, have no dashed box of their own, and are not reached by the
+  eraser (it works on the current layer only; decided).
+- The edit box has a Highlight button (on/off for the selected characters, or for what is typed next, as bold in a
+  word processor) and a colour square that opens a palette (yellow, green, pink, blue, orange, gray). The preview
+  shows the bands. Colours already on the object are read from its record when the box opens.
+- One edit makes one object with one record (its id), selected and moved as a unit; when its bands are not matched to
+  the expected rects exactly, the nearest strokes of the right count are taken as the bands so it is not split.
+
+### Typed text under an object
+
+- An overlay: an object may lie over typed text and is not pushed away by it (only other objects push).
+- A finger double tap where both are: the object. xochitl may take the same double tap and select a word of the
+  typed text (keyboard up; seen with the highlighter in use), and the selection tool cannot be turned on then: the
+  text selection and cursor are ended first (`clearSelectedText`, `setCursorVisible(false, false)`).
+- A highlighter stroke over both: xochitl snaps it to the typed text (a glyph range: `highlightWithLine` in the pen
+  handler's `onStrokeCompleted`), and the object got nothing. The object comes first: at `strokeCompleted(Line)` (its
+  `boundingRect` is read through the Line gadget) a stroke that lies on an object is looked for on the page 600 ms
+  later; when no stroke of its bounds is there, it became a glyph range, which is undone (the page's strokes stay as
+  they were, checked) and the object gets the bands. A stroke on typed text alone still snaps to it. xochitl's
+  "Snap to text" setting is not reachable from the add-on (no object exposes it: probed 11 801 objects).
+- The pen hook was connected as `strokeCompleted()`, a signal that does not exist, so it never ran: a stroke that
+  does not change the page's strokes (a typed-text highlight) left the undo groups as they were, and the next undo
+  press took a whole group under it. Now `strokeCompleted(Line)`.
+
 ### Layers menu
 
 - The T row: up, down and merge hidden. Picking it and delete stay; rename is not blocked.
@@ -194,9 +224,17 @@ moving, matching conversions by the page's strokes, every timing window.
 | a59a3c3e (S') | Chains, boxes and switches still drifted (independent review) | Matching a conversion by the page's strokes fires when it is not on top; observe-then-send paths; time windows | Groups with activity tracking and a page fingerprint; chains sent inside the signal; T made before the handwriting is deleted |
 | a05db063 | Nothing improved: undo stopped or skipped around selections | The pair bookkeeping (where our switches sit in xochitl's unseen history) drifted with pending undos, edits in sessions and fast presses | Design (S'): no hidden switching at all |
 
-**Known limits.** After a conversion the object is not selected (it is moved after a double tap, or in object mode).
-After a double tap the user is on T (visible in the layers menu) until another tool is chosen. Typed text over an
-object takes a double tap there first. Objects follow typed text like ink (stock anchoring, decided).
+**Known limits.**
+- After a double tap the user is on T (visible in the layers menu) until another tool is chosen.
+- Objects follow typed text like ink (stock anchoring, decided).
+- The eraser does not reach bands on T; a highlight is removed in the edit box (Highlight off) or by undo.
+- A double tap on an object over typed text with the Text tool in use: not checked.
+- A highlighter stroke over an object and typed text: the part over typed text beyond the object is not highlighted
+  (the object comes first, the whole stroke goes to it).
+- Edit box preview colours for blue and gray are estimates (yellow, green, pink and orange are sampled on the device).
+- A two-line object was once seen boxed line by line after a pushed move on the device; not reproduced in four
+  tries. For 5 s after a pushed move, a record found only in part is logged (`objects: record ... found in part`)
+  with the strokes that are off.
 
 ## Testing a build
 

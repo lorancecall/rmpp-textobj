@@ -490,6 +490,10 @@ struct PageObjects {
     QList<Placement> found;     // full matches
 };
 
+// A pushed move just happened (layer.h): records found only in part are logged for a few seconds (a diagnostic; a
+// full partial search for every record on every read slowed the page reads down).
+QElapsedTimer g_partDiag;
+
 PageObjects findObjects(QObject *sc, const QString &pageId, bool otherPages) {
     PageObjects po;
     po.rects = pageLineRects(sc);
@@ -504,7 +508,7 @@ PageObjects findObjects(QObject *sc, const QString &pageId, bool otherPages) {
         if (r.page != pageId && (!otherPages || r.n < 3)) continue;
         const qsizetype before = po.found.size();
         findRec(r, i, po.rects, idx, &po.found, nullptr, scaleAllowed(r, pageId));
-        if (po.found.size() == before && r.n >= 10 && r.page == pageId) {
+        if (po.found.size() == before && r.n >= 10 && r.page == pageId && g_partDiag.isValid() && g_partDiag.elapsed() < 5000) {
             // diagnostic (developer, #3: a two-line object split by lines after a pushed move): a record found only
             // in part, with the strokes that are off; logged once per state
             Placement part;

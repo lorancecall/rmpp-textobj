@@ -250,6 +250,7 @@ int textObjectsAt(const QString &page, const QPointF &at, QRectF *box = nullptr)
 }
 
 bool g_moved = false;   // a selection was moved or resized: one step when it ends
+void watchPen(QQuickItem *dv);
 
 // ---- objects kept apart (developer, #3) ----
 // The nearest place for the boxes in `moving` (one object, or a selected group moved as one block) where none of them
@@ -393,6 +394,7 @@ void keepApartAfterMove(QObject *sc) {
     } else if (!off.isNull()) {
         QMetaObject::invokeMethod(sc, "moveSelectedItems", Qt::DirectConnection, Q_ARG(int, t), Q_ARG(QPointF, off));
         TLOG("move on the text layer: %lld object(s) pushed %.0f, %.0f off others", (long long)moving.size(), off.x(), off.y());
+        g_partDiag.start();
     }
     QTimer::singleShot(0, qApp, [] { g_pushing = false; requestBoxes(); });
 }
@@ -566,8 +568,12 @@ void watchLayers() {
         }
         QTimer::singleShot(700, qApp, [] { QString p; if (QObject *s = pageScene(&p)) readTextBoxes(s); });
     });
+    watchPen(dv);
+    // (the signal has the Line: "strokeCompleted()" was never connected, and a stroke that does not change the
+    // page's strokes, a highlight snapped to typed text, left the groups as they were: the next undo press took a
+    // whole group under it, device 2026-11-24)
     if (QObject *ph = dv->property("penHandler").value<QObject *>())
-        hook(ph, "strokeCompleted()", [] {
+        hook(ph, "strokeCompleted(Line)", [] {
             if (!selectionToolActive()) { if (!putting()) groupsUnknown("a pen stroke"); return; }
             // a lasso or pen tap on the Text objects layer that ends with nothing selected: back to writing (the
             // selection settles a moment after the stroke)
@@ -829,6 +835,79 @@ bool overTextObjects(const QString &page, const QRect &r) {
         if (on.width() * on.height() >= 0.6 * a) return true;
     }
     return false;
+}
+
+// ---- typed text under a text object (developer, #3) ----
+// Typed text and text objects may overlap (an overlay: the typed text is not pushed away). A highlighter stroke over
+// both was snapped by xochitl to the typed text (a glyph range) and the object under it got nothing (probed); the
+// text object comes first. xochitl's "Snap to text" setting is not reachable from here (no object has it), so the
+// glyph range is taken back after it is made.
+// The bounds of a Line (a Q_GADGET: its boundingRect property, page coordinates; rmpp-format probes/capture.cpp).
+// Its type is looked up only from a pen signal, when xochitl's QML types are registered (rmpp-format NOTES: earlier
+// it crashed).
+QRectF lineBounds(const void *line) {
+    static const QMetaObject *mo = nullptr;
+    static int prop = -1;
+    if (!mo) {
+        mo = QMetaType::fromName("Line").metaObject();
+        if (mo) prop = mo->indexOfProperty("boundingRect");
+    }
+    if (!mo || prop < 0 || !line) return QRectF();
+    return mo->property(prop).readOnGadget(line).toRectF();
+}
+
+// A highlighter stroke completed (strokeCompleted(Line), after xochitl's own handler, which is connected first): when
+// it lies on a text object and no stroke of its bounds is on the page a moment later, xochitl snapped it to typed
+// text under the object (a glyph range, one undo step). The object comes first: highlightToTextLayer's undo takes
+// the glyph range back (the page's strokes stay as they were, which it checks) and the object gets the bands.
+void highlighterCompleted(const void *line) {
+    QQuickItem *dv = documentView();
+    QObject *sc = dv ? dv->property("sceneController").value<QObject *>() : nullptr;
+    QObject *ph = dv ? dv->property("penHandler").value<QObject *>() : nullptr;
+    int color = kHighlighterYellow;
+    uint argb = 0;
+    const int tl = sc ? textLayer(sc) : -1;
+    if (!sc || tl < 0 || sc->property("currentLayer").toInt() == tl || putting() || !highlighterInUse(ph, &color, &argb)
+        || sc->property("rootDocumentLength").toInt() <= 0)
+        return;
+    const QRectF b = lineBounds(line);
+    if (b.isEmpty()) return;
+    const QString page = dv->property("currentPageId").toString();
+    if (!overTextObjects(page, b.toAlignedRect())) return;
+    QPointer<QObject> scp(sc);
+    QPointer<QQuickItem> dvp(dv);
+    QTimer::singleShot(600, qApp, [scp, dvp, page, b, color, argb] {
+        if (!scp || !dvp || putting() || dvp->property("currentPageId").toString() != page) return;
+        for (const QRect &q : pageLineRects(scp))
+            if (qAbs(q.x() - b.x()) < 8 && qAbs(q.y() - b.y()) < 8 && qAbs(q.width() - b.width()) < 12
+                && qAbs(q.height() - b.height()) < 12)
+                return;   // a stroke: checkHighlights takes it
+        const QRect r = b.toAlignedRect();
+        TLOG("highlight: a stroke on a text object snapped to typed text (%d,%d %dx%d): to the object", r.x(), r.y(),
+             r.width(), r.height());
+        highlightToTextLayer(dvp, scp, page, QList<QRect>{r}, color, argb);
+    });
+}
+
+class LineHook : public QObject {
+public:
+    int qt_metacall(QMetaObject::Call c, int id, void **a) override {
+        id = QObject::qt_metacall(c, id, a);
+        if (id < 0 || c != QMetaObject::InvokeMetaMethod) return id;
+        if (id == 0 && a[1]) highlighterCompleted(a[1]);
+        return -1;
+    }
+};
+
+void watchPen(QQuickItem *dv) {
+    QObject *ph = dv ? dv->property("penHandler").value<QObject *>() : nullptr;
+    if (!ph || ph->property("_rmppTextobjLine").toBool()) return;
+    const int i = ph->metaObject()->indexOfSignal("strokeCompleted(Line)");
+    if (i < 0) { TLOG("highlight: no strokeCompleted(Line) on the pen handler"); return; }
+    ph->setProperty("_rmppTextobjLine", true);
+    auto *h = new LineHook;
+    h->setParent(ph);
+    QMetaObject::connect(ph, i, h, QObject::staticMetaObject.methodCount(), Qt::DirectConnection, nullptr);
 }
 
 // Lines added with addDrawingLine to a layer that is not drawn on by the pen are in the page but not painted (the

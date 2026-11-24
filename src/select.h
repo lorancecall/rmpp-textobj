@@ -504,6 +504,15 @@ void doubleTapNow(double x, double y, bool onText = false, bool edit = true) {
         }
         if (here.size() > 1) { showHint(dv, QStringLiteral("Text objects overlap here.")); return; }
     }
+    // typed text under the object: xochitl took the double tap too and selected a word there (keyboard up; the
+    // selection tool could not be turned on then, and the tap was tried again and again: device 2026-11-24). The
+    // object comes first (developer, #3): the text selection and cursor are ended.
+    if (sc->property("hasTextSelection").toBool() || sc->property("isTextCursorVisible").toBool()) {
+        QMetaObject::invokeMethod(sc, "clearSelectedText", Qt::DirectConnection);
+        QMetaObject::invokeMethod(sc, "setCursorVisible", Qt::DirectConnection, Q_ARG(bool, false), Q_ARG(bool, false));
+        if (QGuiApplication::inputMethod()) QGuiApplication::inputMethod()->hide();
+        TLOG("double tap: on a text object over typed text: its text selection ended");
+    }
     if (!selectionToolActive()) {   // on an object, another tool: the selection tool first (selecting needs it)
         const bool switched = useSelectionTool();
         TLOG("double tap: on a text object, the selection tool %s", switched ? "turned on" : "could not be turned on");

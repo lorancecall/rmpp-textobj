@@ -2,10 +2,10 @@
 # 2026-11-24: after the push it was boxed line by line). The move after the edit box's Cancel is checked too
 # (it was not: "no boxes read at rest").
 open
-object "Other" 1100 1250
-object "testing  testing testing testing testing" 1100 1500
+object "Other" 1100 560
+object "testing  testing testing testing testing" 1100 800
 tool select
-dtap 1160 1500
+dtap 1160 800
 expect-log "edit: 1 object\(s\)"
 key ctrl+a
 tap "#rmppTextobjHighlight"
@@ -15,12 +15,12 @@ wait 3000
 tap 1300 1900
 wait 2500
 mark
-dtap 1160 1500
+dtap 1160 800
 expect-log "double tap: selecting a text object"
 expect-log "edit: 1 object\(s\), 1 highlight\(s\)"
 tap 1317 766
 mark
-drag 1160 1500 1160 1210
+drag 1160 800 1160 510
 tap 1300 1900
 expect-log "move on the text layer: 1 object\(s\) pushed"
 expect-log "a move or resize: one step"
