@@ -134,6 +134,15 @@ RMPP_TEXTOBJ_API int rmpp_textobj_put_lines(const char *lines, double left, doub
                                             int replace, const char *lang) {
     const OpenPage p = openPage();
     if (!p.sc || !p.ph) { TLOG("put lines: no open page"); return -2; }
+    {   // handwriting is converted on the writing layer only: on the Text objects layer a lasso holds text objects
+        // (or strokes that lost their record), and converting those again led to a frozen xochitl (device 064e18a3)
+        const int t = textLayer(p.sc);
+        if (replace != 0 && t >= 0 && p.sc->property("currentLayer").toInt() == t) {
+            TLOG("put lines: on the text layer: not converted");
+            showHint(p.dv, QStringLiteral("Text objects are already text: double tap one to edit it."));
+            return 0;
+        }
+    }
     g_langHint = QString::fromUtf8(lang ? lang : "");
     const QStringList ls = QString::fromUtf8(lines ? lines : "").split(QLatin1Char('\n'), Qt::SkipEmptyParts);
     QStringList texts;

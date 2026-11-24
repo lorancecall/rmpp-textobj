@@ -175,6 +175,7 @@ void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k, cons
     QList<std::shared_ptr<void>> items;
     void *a1[] = {&items, &layer, &scale};
     sc->qt_metacall(QMetaObject::InvokeMetaMethod, clone, a1);
+    TLOG("one undo step: %lld copies of %d strokes", (long long)items.size(), k);
     if (items.size() != k) {
         TLOG("one undo step: %lld items selected, %d added: left as is", (long long)items.size(), k);
         groupsUnknown("ink left as separate strokes");
@@ -240,7 +241,9 @@ void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k, cons
     };
     QTimer::singleShot(400, sc, [scp, k, check] {
         if (!scp) return;
+        TLOG("one undo step: undoing the %d strokes", k);
         ownUndoRedo(scp, true, k);
+        TLOG("one undo step: undone");
         QTimer::singleShot(200, scp, [check] { (*check)(0); });
     });
 }
