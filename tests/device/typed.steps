@@ -1,0 +1,48 @@
+# Typed text under a text object (#3, developer 2026-11-24): an overlay (the typed text is not pushed away); a
+# highlighter stroke over both highlights the object, not the typed text; on typed text alone it still snaps to it;
+# a double tap where both are selects the object.
+open
+tool text
+tap 257 392
+wait 2500
+# the page's typed text cleared first (scratch: keys of earlier tests may have left empty lines in it)
+key ctrl+a
+key backspace
+wait 1000
+text "Typed line one here"
+wait 1000
+tap 1552 1575
+wait 2500
+# the view scrolled while the keyboard was up: opened again, at the top
+open
+object "Object over" 450 285
+expect-no-log "pushed"
+mark
+highlight 470 620 283
+expect-log "snapped to typed text .*: to the object"
+expect-log "highlight: \d+ band\(s\) on the text layer, with 1 object"
+wait 2000
+shot typed-1-object-hl
+expect-ink 455 265 640 300 mark
+# the typed text left of the object stays bare
+expect-none 240 250 400 300 mark
+# one undo press takes the band back (not the object under it), redo brings it again
+undo
+wait 2500
+expect-none 455 265 640 300 mark
+expect-ink 455 265 640 300
+redo
+wait 2500
+expect-ink 455 265 640 300 mark
+mark
+tool pen
+highlight 250 380 275
+expect-no-log "to the object"
+wait 2000
+shot typed-2-typed-hl
+expect-ink 240 250 400 300 mark
+mark
+dtap 540 283
+expect-log "double tap: selecting a text object"
+expect-log "edit: 1 object\(s\), 1 highlight\(s\)"
+tap 1317 766

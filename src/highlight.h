@@ -12,8 +12,10 @@
 // - editing the text draws the highlights again on the new text: a highlight follows its characters (text inserted
 //   before it moves it, text changed inside it stays highlighted, its text deleted removes it);
 // - a highlight whose strokes are all erased is dropped from the record.
-// Highlights drawn with builds before this (freehand strokes on an object, not in the record) are taken up when the
-// object is edited; their colour is not known then, so they come back yellow.
+// The record's highlights last for the session (records are carried in the text's strokes, src/carry.h, and a
+// highlight comes after them). Bands or freehand highlighter strokes on an object that the record does not have (after
+// a restart, on another tablet) are taken up when the object is edited, with the colour their stroke has in the page
+// file; yellow only when the file does not have that stroke yet.
 // tests/highlight_test.py is a 1:1 Python port of the geometry with its unit tests; keep them in step.
 //
 // Line for a highlighter stroke (rmpp-format NOTES, verified with highlightWithLine): tool 18 (Highlighterv2),
@@ -185,7 +187,10 @@ bool sameBand(const QRect &q, const QRectF &e, double k) {
     const QPointF c = centre(q), ce = e.center();
     const double tol = qMax(kPosTol + 1, 0.12 * e.height());
     if (qMax(qAbs(c.x() - ce.x()), qAbs(c.y() - ce.y())) > tol) return false;
-    if (qAbs(q.width() - e.width()) > qMax(4.0, 0.12 * e.width()) + e.height() * qAbs(1 - 1 / k)) return false;
+    // as wide as e, or wider by its own height: a band runs the whole width of e, and xochitl's rect counts round ends
+    // half the stroke width beyond the end points (the highlighter paints flat ends, addBands)
+    const double tolW = qMax(4.0, 0.12 * e.width()) + e.height() * qAbs(1 - 1 / k), dw = q.width() - e.width();
+    if (qAbs(dw) > tolW && qAbs(dw - q.height()) > tolW) return false;
     const double h0 = qMin(e.height(), e.height() / k), h1 = qMax(e.height(), e.height() / k);
     return q.height() >= 0.7 * h0 - 3 && q.height() <= 1.3 * h1 + 3;
 }
@@ -200,18 +205,21 @@ bool isBand(const PageObjects &po, const Placement &p, int i) {
 
 // Whether page rect i is a highlighter-like stroke on the object at p: not one of its strokes, as thick as a
 // highlighter (at least 0.35 em high), and mostly (70%) on the object.
-bool isHighlightStroke(const PageObjects &po, const Placement &p, int i) {
-    if (p.members.contains(i)) return false;
-    const QRect &r = po.rects[i];
-    const double em = po.recs[p.rec].em * p.k;
+// A highlighter stroke with bounds r lies on the object placed at p (record rec): about a line high, mostly on it.
+bool highlightOn(const Rec &rec, const Placement &p, const QRect &r) {
+    const double em = rec.em * p.k;
     if (r.height() < 0.35 * em || r.width() < 0.4 * em || r.height() > 2.5 * em) return false;
     const QRectF on = QRectF(r).intersected(p.box.adjusted(-0.25 * em, -0.25 * em, 0.25 * em, 0.25 * em));
     return on.width() * on.height() >= 0.7 * r.width() * r.height();
 }
 
+bool isHighlightStroke(const PageObjects &po, const Placement &p, int i) {
+    return !p.members.contains(i) && highlightOn(po.recs[p.rec], p, po.rects[i]);
+}
+
 // ---- drawing bands ----
-// Each band rect as one straight highlighter stroke through its middle, as thick as the band, from half the thickness
-// inside each end (its ink then fills the rect). Returns the number drawn, -1 if Line is not as expected.
+// Each band rect as one straight highlighter stroke through its middle, as thick as the band, from its left
+// end to its right end (its ink then fills the rect). Returns the number drawn, -1 if Line is not as expected.
 int addBands(QObject *sc, const QList<Hl> &hls) {
     const int add = sc->metaObject()->indexOfMethod("addDrawingLine(Line)");
     const QMetaType type = add >= 0 ? sc->metaObject()->method(add).parameterMetaType(0) : QMetaType();
@@ -221,8 +229,9 @@ int addBands(QObject *sc, const QList<Hl> &hls) {
         for (const QRectF &r : h.rects) {
             const double w = r.height();
             const double y = r.center().y();
-            double x0 = r.left() + w / 2, x1 = r.right() - w / 2;
-            if (x1 < x0) x0 = x1 = r.center().x();
+            // end to end: the highlighter paints flat ends at the end points (device 2026-11-24: drawn from half the
+            // width inside each end, the band left the first and last characters half bare)
+            const double x0 = r.left(), x1 = r.right();
             QList<InkPt> pts;
             const int np = 12;
             for (int i = 0; i < np; ++i) {
@@ -301,6 +310,17 @@ QQuickItem *activeToolButton() {
 }
 
 // The pen in use: whether it is a highlighter, and its colour.
+// xochitl's own "Snap to text" switch in the highlighter menu (property snapHighlighterToText, found once on the
+// pen handler or an item of the UI). Highlights on text objects become bands only while it is on, as on typed text.
+// Not found: on (xochitl's default).
+bool snapToTextOn(QObject *ph) {
+    static QPointer<QObject> holder;
+    if (!holder && ph && ph->metaObject()->indexOfProperty("snapHighlighterToText") >= 0) holder = ph;
+    if (!holder)
+        holder = findAnywhere([](QQuickItem *i) { return i->metaObject()->indexOfProperty("snapHighlighterToText") >= 0; });
+    return !holder || holder->property("snapHighlighterToText").toBool();
+}
+
 bool highlighterInUse(QObject *ph, int *color, uint *argb) {
     if (!ph) return false;
     const int tool = ph->property("lineTool").toInt();

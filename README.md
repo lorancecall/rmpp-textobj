@@ -27,11 +27,12 @@ has **rmpp setup**, the installer for all rmpp add-ons.
 ## Use
 
 - **Add text object** (T tool menu): tap where the text goes, type, OK; the new object is selected to move it.
-- **Edit**: with the selection tool, double tap an object with a finger to select it, double tap again to edit
-  its text, weight and size.
+- **Edit**: double tap an object with a finger: it is selected and its text, weight and size open for editing
+  (Cancel leaves it selected to move).
 - **Always whole**: lasso, move, copy and delete act on whole objects; erasing part of one makes it plain strokes.
-- **Highlights** are kept with the object and come back on the same characters after an edit; underlines and
-  other handwriting stay separate.
+- **Highlights** snap to the characters as a band that goes with the object and comes back on the same characters
+  after an edit; in the edit box, a Highlight button turns them on and off per character. Underlines and other
+  handwriting stay separate.
 - **Handwriting to text objects**: [rmpp-hwr](https://github.com/lorancecall/rmpp-hwr)'s lasso convert.
 
 Details: [docs/usage.md](docs/usage.md).
@@ -40,7 +41,8 @@ Details: [docs/usage.md](docs/usage.md).
 
 Loaded into xochitl by rmpp-preload, it draws text with the glyphs of [rmpp-lang](https://github.com/lorancecall/rmpp-lang)'s
 language add-ons (this package has ASCII only; text with characters no installed language has is refused, naming
-them). Each object is recorded by its strokes' pattern, so it is found wherever it was moved, scaled or copied.
+them). Each object carries its own record inside its strokes, so it is found wherever it was moved, scaled or
+copied, syncs with the page and can be edited on another tablet with this add-on; without it, it is plain handwriting.
 The code and its tests: [docs/develop.md](docs/develop.md).
 
 ## Build

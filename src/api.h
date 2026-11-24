@@ -2,7 +2,7 @@
 // Another add-on finds these with dlopen("/usr/lib/rmpp/rmpp-textobj/librmpp-textobj-ui.so", RTLD_NOW | RTLD_NOLOAD)
 // + dlsym (rmpp-textobj is loaded first: preload.d/55-rmpp-textobj.so). All of them run on xochitl's main (GUI)
 // thread and work on the open page and its current lasso selection. Text is UTF-8. rmpp-textobj owns the text object
-// records; callers never read or write objects.json.
+// records (carried in the objects' strokes).
 //
 //   int rmpp_textobj_api(void)
 //       API version (1).

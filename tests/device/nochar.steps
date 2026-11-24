@@ -1,0 +1,16 @@
+# A highlighter stroke inside an object's box but on no characters (the empty end of its second line): no object
+# takes it, and the stroke stays as drawn (#3, device 2026-11-24: it was undone for the object and lost, the switch to
+# the Text objects layer having cleared the redo history). A stroke on the characters still becomes a band.
+open
+object "testing  testing testing testing testing" 1100 1400
+tool pen
+mark
+highlight 1320 1520 1434
+wait 4000
+expect-log "no text object under it: the stroke drawn again"
+expect-ink 1310 1415 1530 1455 mark
+shot nochar-1
+mark
+highlight 1100 1300 1434
+wait 3000
+expect-log "band\(s\) on the text layer, with 1 object"

@@ -1,0 +1,26 @@
+# Moving a text object (#3): the selection tool moves the whole object, its highlight bands with it.
+open
+object "Move test" 900 1350
+highlight 890 1060 1350
+expect-log "highlight: \d+ band\(s\) on the text layer, with 1 object"
+wait 1500
+expect-ink 895 1345 1060 1375 mark
+tool select
+mark
+# a double tap selects the object and opens its edit box; Cancel leaves it selected
+dtap 960 1350
+expect-log "double tap: selecting a text object"
+expect-log "edit: 1 object\(s\)"
+tap 1317 766
+mark
+drag 960 1350 960 1600
+tap 1300 1700
+expect-log "move on the text layer"
+expect-log "a move or resize: one step"
+wait 2500
+# the object and its band in the new place, nothing left in the old one
+expect-ink 895 1530 1060 1660
+expect-ink 895 1530 1060 1660 mark
+expect-none 895 1330 1060 1375 mark
+expect-none 895 1330 1060 1375
+shot move-1-moved

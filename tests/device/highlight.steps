@@ -1,0 +1,44 @@
+# Highlights in the edit box (#3): the Highlight button, on while typing, highlights only what is typed then (as bold
+# in a word processor); the preview shows it; on selected characters it turns their highlight off.
+open
+object "Mark" 1200 1250
+tool select
+mark
+dtap 1240 1250
+expect-log "edit: 1 object\(s\), 0 highlight\(s\)"
+tap "#rmppTextobjHighlight"
+# the colour from the palette
+tap "#rmppTextobjHighlightColour"
+tap "#rmppTextobjColour4"
+text "ed"
+wait 1500
+# the preview (under the text field) shows the band in green, on "ed" only
+expect-ink 100 490 1500 710 green
+shot highlight-1-box
+tap 1470 766
+expect-log "edit: Marked"
+expect-log "edit: 1 highlight\(s\) from the box"
+expect-log "new ink: \d+ strokes in one undo step"
+wait 3000
+tap 1300 1700
+wait 2500
+expect-ink 1190 1230 1340 1280 green
+shot highlight-2-marked
+# all selected: Highlight puts it on all of them (part was), once more takes it off all
+mark
+dtap 1240 1250
+expect-log "edit: 1 object\(s\), 1 highlight\(s\)"
+key ctrl+a
+tap "#rmppTextobjHighlight"
+wait 1500
+expect-ink 100 490 1500 710 green
+tap "#rmppTextobjHighlight"
+wait 1500
+expect-none 100 490 1500 710 green
+tap 1470 766
+expect-log "edit: 0 highlight\(s\) from the box"
+wait 3000
+tap 1300 1700
+wait 2500
+expect-none 1190 1230 1340 1280 green
+shot highlight-3-off

@@ -1,0 +1,32 @@
+# Highlight bands (#3, option A): a highlighter stroke over a text object becomes a straight band on the Text objects
+# layer, with the object, end to end over the characters; one undo press takes it back, the text stays.
+open
+object "Band test" 900 600
+expect-log "new ink: \d+ strokes"
+shot bands-1-object
+mark
+highlight 890 1060 600
+expect-log "highlight check: 1 new stroke\(s\) on layer \d+, highlighter 1, snap to text 1, 1 over objects"
+expect-log "highlight: \d+ band\(s\) on the text layer, with 1 object"
+expect-log "layer \d+ redrawn"
+wait 1500
+# on the screen without opening the page again (between "and" and "test", under the letters' tops)
+expect-ink 990 600 1010 620 mark
+remember band 1000 610
+# end to end: the first and the last letter covered too
+expect-ink 902 600 914 620 @band
+expect-ink 1034 600 1046 620 @band
+shot bands-2-band
+mark
+undo
+expect-log "undo: \d+ step\(s\) in one press"
+wait 1500
+expect-none 895 590 1060 630 mark
+expect-ink 895 580 1060 630
+shot bands-3-undone
+mark
+redo
+expect-log "redo: \d+ step\(s\) in one press"
+wait 1500
+expect-ink 990 600 1010 620 @band
+shot bands-4-redone

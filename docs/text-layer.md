@@ -98,7 +98,15 @@ An edit on T (T current) is A', B' on T: one group of 2.
   selections too), never after an undo or redo, never on a pick in the layers menu.
 - Single finger taps on other layers do nothing (a palm or finger while writing).
 
-Planned: dashed boxes on every object, lasso multi-selects (edit off for more than one).
+- A dashed box around every object while T is current and was chosen in the layers panel (not when a conversion or a
+  double tap made it current) (plain Rectangles over DeviceSceneView; a Canvas painted
+  nothing, probed). The boxes are read from the page when its content may have changed (layer change, selection
+  end, undo/redo, conversion, edit) and mapped with `sceneToView` whenever the view moves (`viewportChanged`,
+  `viewScaleChanged`, `scrollPositionChanged`); hidden while `gesturing`.
+- Lasso several objects: they move and resize together (one pending edit, one step). Edit is refused for more than
+  one object on T ("double tap one to edit it"); joining objects into one edit stays on other layers.
+- A tool change during our own tap sequence (tool, layer, selection, edit box) is ours: it is looked at once when the
+  sequence ends (no time windows; a 5 s cap only as a fail-safe).
 
 ### Objects kept apart
 
@@ -108,11 +116,51 @@ Planned: dashed boxes on every object, lasso multi-selects (edit off for more th
 - Checked again on T with its real strokes once the conversion switched there (the known boxes may be old): still
   overlapping, the object is selected and pushed (moveSelectedItems + applyPendingEdit, one more step in the
   conversion's group); no room near, the whole conversion group is undone (a message).
-- A move or resize on Text objects (on lift): pushed the same way inside the same pending edit, so the move and the
-  push are one step (`moveSelectedItems` adds to the pending edit: probed). With no room near, the move is put back
-  (`cancelPendingEdit`: no step, probed).
+- A move or resize on Text objects: pushed the same way inside the same pending edit, so the move and the push are
+  one step (`moveSelectedItems` adds to the pending edit: probed). It waits for the pen to be up after the last
+  change (`penHandler.timeSincePenUp()` restarts at each lift: probed). A selected group is pushed as one block,
+  each object checked against the others' boxes (not one box around the group). With no room near for all of
+  them, the move is put back (`cancelPendingEdit`: no step, probed) and the selection ended (a further move of it
+  after a cancel is not committed: probed).
 - An undo of a conversion drops its box from `textlayer.json`, and a redo puts it back, so an undone object does not
   push the next one.
+
+### Highlights (bands)
+
+- A highlighter stroke over an object on the writing layer becomes bands on T (`highlightToTextLayer`): the stroke
+  is undone, one band per line (end to end over the characters, em-box high) is drawn on T in the stroke's colour, the
+  highlight is kept in the object's record (character range, colour). One undo press takes the bands back (a group
+  of the bands plus the layer switches around them: `setCurrentLayer` and each visibility change are steps).
+- Bands are part of their object: they move with it, have no dashed box of their own, and are not reached by the
+  eraser (it works on the current layer only; decided).
+- The edit box has a Highlight button (on/off for the selected characters, or for what is typed next, as bold in a
+  word processor) and a colour square that opens a palette (yellow, green, pink, blue, orange, gray). The preview
+  shows the bands. Colours already on the object are read from its record when the box opens.
+- One edit makes one object with one record (its id), selected and moved as a unit; when its bands are not matched to
+  the expected rects exactly, the nearest strokes of the right count are taken as the bands so it is not split.
+
+- A highlighter stroke inside an object's box that covers none of its characters (the empty end of a short line):
+  no object takes it. The stroke was undone for the object before that was known, and the switch to the Text
+  objects layer had cleared the redo history, so it was lost. A copy of the stroke is kept from
+  `strokeCompleted(Line)` and drawn again (`addDrawingLine`, or `highlightWithLine` when it was a typed-text
+  highlight); a stroke drawn again is not taken up again.
+- Edit box preview colours: all six sampled on the device (2026-11-24).
+
+### Typed text under an object
+
+- An overlay: an object may lie over typed text and is not pushed away by it (only other objects push).
+- A finger double tap where both are: the object (checked with the pen, highlighter, selection and Text tools). xochitl may take the same double tap and select a word of the
+  typed text (keyboard up; seen with the highlighter in use), and the selection tool cannot be turned on then: the
+  text selection and cursor are ended first (`clearSelectedText`, `setCursorVisible(false, false)`).
+- A highlighter stroke over both: xochitl snaps it to the typed text (a glyph range: `highlightWithLine` in the pen
+  handler's `onStrokeCompleted`), and the object got nothing. The object comes first: at `strokeCompleted(Line)` (its
+  `boundingRect` is read through the Line gadget) a stroke that lies on an object is looked for on the page 600 ms
+  later; when no stroke of its bounds is there, it became a glyph range, which is undone (the page's strokes stay as
+  they were, checked) and the object gets the bands. A stroke on typed text alone still snaps to it. xochitl's
+  "Snap to text" setting is not reachable from the add-on (no object exposes it: probed 11 801 objects).
+- The pen hook was connected as `strokeCompleted()`, a signal that does not exist, so it never ran: a stroke that
+  does not change the page's strokes (a typed-text highlight) left the undo groups as they were, and the next undo
+  press took a whole group under it. Now `strokeCompleted(Line)`.
 
 ### Layers menu
 
@@ -183,9 +231,15 @@ moving, matching conversions by the page's strokes, every timing window.
 | a59a3c3e (S') | Chains, boxes and switches still drifted (independent review) | Matching a conversion by the page's strokes fires when it is not on top; observe-then-send paths; time windows | Groups with activity tracking and a page fingerprint; chains sent inside the signal; T made before the handwriting is deleted |
 | a05db063 | Nothing improved: undo stopped or skipped around selections | The pair bookkeeping (where our switches sit in xochitl's unseen history) drifted with pending undos, edits in sessions and fast presses | Design (S'): no hidden switching at all |
 
-**Known limits.** After a conversion the object is not selected (it is moved after a double tap, or in object mode).
-After a double tap the user is on T (visible in the layers menu) until another tool is chosen. Typed text over an
-object takes a double tap there first. Objects follow typed text like ink (stock anchoring, decided).
+**Known limits.**
+- After a double tap the user is on T (visible in the layers menu) until another tool is chosen.
+- Objects follow typed text like ink (stock anchoring, decided).
+- The eraser does not reach bands on T; a highlight is removed in the edit box (Highlight off) or by undo.
+- A highlighter stroke over an object and typed text: the part over typed text beyond the object is not highlighted
+  (the object comes first, the whole stroke goes to it).
+- A two-line object was once seen boxed line by line after a pushed move on the device; not reproduced in four
+  tries. For 5 s after a pushed move, a record found only in part is logged (`objects: record ... found in part`)
+  with the strokes that are off.
 
 ## Testing a build
 
@@ -209,6 +263,14 @@ On a fresh notebook:
 14. On Text objects, tap on no object (or lasso nothing): Layer 1 current; one undo: back on Text objects together
     with the step before.
 15. On Layer 1, single taps do nothing.
+16. Text objects chosen in the layers panel: a dashed box on every object; Layer 1 current, or T made current by a
+    conversion or a double tap: none.
+17. Zoom and scroll: the boxes follow once the view is still.
+18. Lasso two objects, move: both move; one undo puts both back.
+19. Move a group onto another object: pushed as a block; no room: all put back (nothing to undo).
+20. A group around an unselected object, nudged: not pushed.
+21. Double tap with two objects selected on Text objects: the message, no edit box.
+22. Nudge one object by less than its own size: it stays where it was put.
 
 ## Log lines (`journalctl -u xochitl | grep rmpp-textobj`)
 
