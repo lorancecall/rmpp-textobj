@@ -106,7 +106,9 @@ int g_putSteps = 0;   // steps of the action being put before its new ink is add
 // the object is left selected.
 extern bool g_pushing;   // layer.h
 void placeOnTextLayer(QPointer<QObject> scp, const QString &page, const QRectF &box, const QSet<QString> &newKeys, int text) {
-    if (!scp || scp->property("currentLayer").toInt() != text) return;
+    // the conversion is done once this ends: putting() off at once (it stayed on for ~4 s, and a move, tap or double
+    // tap right after a conversion was ignored: device 064e18a3)
+    if (!scp || scp->property("currentLayer").toInt() != text) { g_putting = false; return; }
     const QList<QRect> all = pageLineRects(scp);
     QList<int> mine;
     QList<QRectF> others;
@@ -118,6 +120,7 @@ void placeOnTextLayer(QPointer<QObject> scp, const QString &page, const QRectF &
         TLOG("convert: the object not found exactly on the text layer (%lld of %lld): not checked",
              (long long)mine.size(), (long long)newKeys.size());
         if (textObjectsAt(page, box.center(), nullptr) <= 1) selectRect(scp, box.toAlignedRect().adjusted(-2, -2, 2, 2), 0);
+        g_putting = false;
         return;
     }
     QPointF off;
@@ -133,9 +136,11 @@ void placeOnTextLayer(QPointer<QObject> scp, const QString &page, const QRectF &
             TLOG("convert: no room near on the text layer, the conversion left (its group unknown)");
         }
         if (QQuickItem *dv = documentView()) showHint(dv, QStringLiteral("No room for the text object here: other text objects are in the way."));
+        g_putting = false;
         return;
     }
     setSelection(scp, all, mine, [scp, page, box, off, text] {
+        g_putting = false;
         if (!scp || off.isNull()) return;
         g_pushing = true;
         QMetaObject::invokeMethod(scp, "moveSelectedItems", Qt::DirectConnection, Q_ARG(int, text), Q_ARG(QPointF, off));
@@ -217,6 +222,7 @@ void groupNewInk(QPointer<QObject> scp, const QSet<QString> &before, int k, cons
         sc->qt_metacall(QMetaObject::InvokeMetaMethod, add, a3);
         TLOG("new ink: %d strokes in one undo step (%d checks)%s", k, tries + 1, toText ? ", on the text layer" : "");
         pushGroup(sc, page, g_putSteps + 1, false, toText ? QList<QRectF>{box} : QList<QRectF>{});
+        if (!toText) g_putting = false;   // done (onto the Text objects layer: placeOnTextLayer ends it)
         if (toText) {
             // cloneAddAndSelectItems leaves the object selected on the Text objects layer while the writing layer is
             // current: xochitl never commits a move of that selection (device, f1b714c2: it jumped back). So the Text
