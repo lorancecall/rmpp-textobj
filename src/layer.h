@@ -317,7 +317,8 @@ QList<QRectF> strayClusters(const QList<QRect> &rects, const QSet<int> &covered,
 void objectBoxes(QObject *sc, const QString &page, QList<QRectF> *selected, QList<QRectF> *others) {
     const PageObjects po = findObjects(sc, page, false);
     QSet<QString> selKeys;
-    for (const QRect &r : lineRects(sc)) selKeys.insert(rectKey(r));
+    if (sc->property("selectionItemCount").toInt() > 0)
+        for (const QRect &r : lineRects(sc)) selKeys.insert(rectKey(r));
     QSet<int> covered;
     for (const Placement &p : po.found) {
         int in = 0;
@@ -338,16 +339,40 @@ void objectBoxes(QObject *sc, const QString &page, QList<QRectF> *selected, QLis
 // pushed to the nearest free place in the same pending edit (one step when the selection ends: probed); with no room
 // near, the move is cancelled (cancelPendingEdit: no step, probed).
 bool g_pushing = false;
+// Positions are read only while no edit is pending (review of f028522: during a pending drag the page reports
+// positions that cannot be trusted, and the push saw no overlap while the one box left showing jumped). The last
+// read at rest is kept: the selected objects' boxes and the others'; a move maps the selected ones by the pending
+// transform.
+QList<QRectF> g_restSelected, g_restOthers;
+bool g_restValid = false;
+QString g_restPage;
+
 void keepApartAfterMove(QObject *sc) {
     const int t = textLayer(sc);
     if (t < 0 || sc->property("currentLayer").toInt() != t || g_edit.box || putting()) return;
     if (sc->property("pendingEdit").value<QTransform>().isIdentity()) return;
     QQuickItem *dv = documentView();
     const QString page = dv ? dv->property("currentPageId").toString() : QString();
-    QList<QRectF> moving, others;
-    objectBoxes(sc, page, &moving, &others);
-    TLOG("move on the text layer: %lld moved box(es), %lld other(s)", (long long)moving.size(), (long long)others.size());
-    if (moving.isEmpty()) return;
+    if (!g_restValid || g_restPage != page || g_restSelected.isEmpty()) {
+        TLOG("move on the text layer: no boxes read at rest for this selection: not checked");
+        return;
+    }
+    const QTransform pe = sc->property("pendingEdit").value<QTransform>();
+    QList<QRectF> moving;
+    for (const QRectF &b : g_restSelected) moving << pe.mapRect(b);
+    const QList<QRectF> others = g_restOthers;
+    QRectF mu, ou, reported, area;
+    for (const QRectF &b : moving) mu |= b;
+    for (const QRectF &b : others) ou |= b;
+    for (const QRect &r : lineRects(sc)) reported |= QRectF(r);
+    const QRect all(-20000, -20000, 40000, 80000);
+    const QList<QRect> areaRects = lineRects(sc, &all);
+    for (const QRect &r : areaRects) area |= QRectF(r);
+    TLOG("move on the text layer: pe %.2f,%.2f %.0f,%.0f; %lld moved box(es) %.0f,%.0f %.0fx%.0f (selection reported "
+         "%.0f,%.0f %.0fx%.0f); %lld other(s) %.0f,%.0f %.0fx%.0f (area query %lld in %.0f,%.0f %.0fx%.0f)",
+         pe.m11(), pe.m22(), pe.dx(), pe.dy(), (long long)moving.size(), mu.x(), mu.y(), mu.width(), mu.height(),
+         reported.x(), reported.y(), reported.width(), reported.height(), (long long)others.size(), ou.x(), ou.y(),
+         ou.width(), ou.height(), (long long)areaRects.size(), area.x(), area.y(), area.width(), area.height());
     QPointF off;
     g_pushing = true;
     if (!freePlace(moving, others, &off)) {
@@ -370,7 +395,9 @@ void keepApartAfterMove(QObject *sc) {
 // timeSincePenUp does not see a selection drag (probed): waiting on it held the push for 8 s, past the selection.
 bool g_pushWait = false;
 bool selectionPressed() {
-    QQuickItem *h = findAnywhere([](QQuickItem *i) { return classStarts(i, "SceneSelectionHandler"); });
+    static QPointer<QQuickItem> cached;
+    if (!cached) cached = findAnywhere([](QQuickItem *i) { return classStarts(i, "SceneSelectionHandler"); });
+    QQuickItem *h = cached;
     if (!h) return false;
     for (QQuickItem *k : h->childItems())
         if (k->inherits("QQuickMouseArea") && k->property("pressed").toBool()) return true;
@@ -615,27 +642,24 @@ void mapBoxes() {
 void readBoxesNow() {
     QString page;
     QObject *sc = pageScene(&page);
+    if (sc && !sc->property("pendingEdit").value<QTransform>().isIdentity()) { mapBoxes(); return; }   // not now
     g_pageBoxes.clear();
+    g_restValid = false;
     const int t = sc ? textLayer(sc) : -1;
     if (sc && t >= 0 && sc->property("currentLayer").toInt() == t && !g_edit.box && !putting()) {
         // a selected object shows xochitl's selection frame instead, which moves with it; its box comes back at the
         // new place when the selection ends (developer: the box should move with the object)
-        const PageObjects po = findObjects(sc, page, false);
-        QSet<QString> selKeys;
-        if (sc->property("selectionItemCount").toInt() > 0)
-            for (const QRect &r : lineRects(sc)) selKeys.insert(rectKey(r));
-        QSet<int> covered;
-        for (const Placement &p : po.found) {
-            bool selected = false;
-            for (int m : p.members)
-                if (m >= 0) { covered.insert(m); if (selKeys.contains(rectKey(po.rects[m]))) selected = true; }
-            if (!selected) g_pageBoxes << p.box;
-        }
-        for (int i = 0; i < po.rects.size(); ++i) if (selKeys.contains(rectKey(po.rects[i]))) covered.insert(i);
-        const QList<QRectF> strays = strayClusters(po.rects, covered);
-        g_pageBoxes << strays;
-        TLOG("boxes: %lld object(s), %lld unrecorded group(s), %lld selected stroke(s) left out",
-             (long long)(g_pageBoxes.size() - strays.size()), (long long)strays.size(), (long long)selKeys.size());
+        QList<QRectF> sel, others;
+        objectBoxes(sc, page, &sel, &others);
+        g_restSelected = sel;
+        g_restOthers = others;
+        g_restPage = page;
+        g_restValid = true;
+        g_pageBoxes = others;
+        QRectF ou;
+        for (const QRectF &o : others) ou |= o;
+        TLOG("boxes: %lld shown in %.0f,%.0f %.0fx%.0f, %lld selected left out", (long long)others.size(), ou.x(),
+             ou.y(), ou.width(), ou.height(), (long long)sel.size());
     }
     mapBoxes();
 }
@@ -674,7 +698,7 @@ void installBoxOverlay() {
         QPointer<QQuickItem> svp(sv);
         QObject::connect(win, &QQuickWindow::afterAnimating, sv, [svp] {
             static QString last;
-            if (!svp || g_pageBoxes.isEmpty()) return;
+            if (!svp || g_pageBoxes.isEmpty() || selectionPressed()) return;   // not while a selection is dragged
             const QString k = viewKey(svp);
             if (k != last) { last = k; mapBoxes(); }
         });
