@@ -302,9 +302,44 @@ void recordNew(QPointer<QObject> scp, const QString &page, const QString &text, 
             return;
         }
         QList<Hl> found = hls;
-        const QList<QRect> glyphs = nb > 0 ? splitBands(rects, &found) : rects;
+        QList<QRect> glyphs = nb > 0 ? splitBands(rects, &found) : rects;
+        if (glyphs.size() != n && nb > 0 && rects.size() == n + nb) {
+            // the count is right but a band was not within the tolerance: the strokes nearest the expected bands (centre
+            // and size) are taken for them, so the object is still recorded whole (device 2026-11-24: "not recorded",
+            // the sentence's words then boxed one by one)
+            QList<QRect> g = rects;
+            QList<Hl> f = hls;
+            for (Hl &h : f) {
+                QList<QRectF> got;
+                for (const QRectF &e : h.rects) {
+                    int best = -1;
+                    double bestErr = 0;
+                    for (int i = 0; i < g.size(); ++i) {
+                        const double err = (centre(g[i]) - e.center()).manhattanLength() + qAbs(g[i].width() - e.width())
+                                         + qAbs(g[i].height() - e.height());
+                        if (best < 0 || err < bestErr) { best = i; bestErr = err; }
+                    }
+                    if (best >= 0) got << QRectF(g.takeAt(best));
+                }
+                h.rects = got;
+            }
+            if (g.size() == n) {
+                TLOG("new ink: %d band(s) taken by the nearest strokes (not within the tolerance)", nb);
+                glyphs = g;
+                found = f;
+            }
+        }
         if (glyphs.size() != n) {
             TLOG("new ink: %lld strokes are not %d glyphs and %d bands: not recorded", (long long)rects.size(), n, nb);
+            QStringList want, near;   // diagnosis: the bands expected and the strokes as tall as a band
+            double hmin = 1e9;
+            for (const Hl &h : hls) for (const QRectF &e : h.rects) {
+                want << QStringLiteral("%1,%2 %3x%4").arg(e.x(), 0, 'f', 1).arg(e.y(), 0, 'f', 1).arg(e.width(), 0, 'f', 1).arg(e.height(), 0, 'f', 1);
+                hmin = qMin(hmin, e.height());
+            }
+            for (const QRect &r : rects)
+                if (r.height() >= 0.7 * hmin && r.width() >= r.height()) near << QStringLiteral("%1,%2 %3x%4").arg(r.x()).arg(r.y()).arg(r.width()).arg(r.height());
+            TLOG("new ink: bands expected %s; band-like strokes %s", qPrintable(want.join(QLatin1Char(' '))), qPrintable(near.join(QLatin1Char(' '))));
             g_putting = false;
             return;
         }
@@ -548,7 +583,7 @@ Item {
     function hlString() { return hls.map(h => h.a + "," + h.b + "," + h.c + "," + h.argb).join(";"); }
     function colourOf(c, argb) {
         if (c === 9 && argb) return "#" + (argb & 0xffffff).toString(16).padStart(6, "0");
-        return ({3: "#fff275", 4: "#acff85", 5: "#ffa8d6", 14: "#8fd1ff", 15: "#ffc870", 16: "#c8c8c8"})[c] || "#fff275";
+        return ({3: "#fff275", 4: "#acff85", 5: "#db91e6", 14: "#8fd1ff", 15: "#ffc870", 16: "#c8c8c8"})[c] || "#fff275";
     }
     function isHl(i) { for (const h of hls) if (h.a <= i && i < h.b) return true; return false; }
     function covered(a, b) { for (let i = a; i < b; ++i) if (!isHl(i)) return false; return b > a; }
@@ -825,7 +860,7 @@ QColor highlightColour(int c, uint argb) {
     if (c == 9 && argb) return QColor::fromRgb(argb | 0xff000000u);
     switch (c) {
     case 4: return QColor(0xac, 0xff, 0x85);
-    case 5: return QColor(0xff, 0xa8, 0xd6);
+    case 5: return QColor(0xdb, 0x91, 0xe6);   // as the device paints it (sampled 2026-11-24)
     case 14: return QColor(0x8f, 0xd1, 0xff);
     case 15: return QColor(0xff, 0xc8, 0x70);
     case 16: return QColor(0xc8, 0xc8, 0xc8);
@@ -946,7 +981,19 @@ void openObjectEdit(QQuickItem *dv, QObject *sc, QObject *ph, const PageObjects 
                 h.a += base; h.b += base;
                 // not in the record (drawn before a restart, on another tablet, or freehand): the colour its stroke has
                 // in the page file; yellow when the file does not have it
-                if (fileHighlightColor(pageId, QRectF(po.rects[m]), &h.color, &h.argb))
+                // a band drawn here that did not match its recorded rects: the record's highlight on these characters
+                // gives the colour (device 2026-11-24: a pink band came back yellow, not yet in the page file)
+                bool fromRec = false;
+                for (int j = 0; j < recHl.size(); ++j)
+                    if (recHl[j].a < h.b && h.a < recHl[j].b) {
+                        h.color = recHl[j].color; h.argb = recHl[j].argb; shown[j] = false; fromRec = true;
+                        QStringList er;
+                        for (const QRectF &q : recHl[j].rects) er << QStringLiteral("%1,%2 %3x%4").arg(q.x(), 0, 'f', 0).arg(q.y(), 0, 'f', 0).arg(q.width(), 0, 'f', 0).arg(q.height(), 0, 'f', 0);
+                        TLOG("edit: band %d,%d %dx%d not matched to recorded %s: colour %d from the record", po.rects[m].x(),
+                             po.rects[m].y(), po.rects[m].width(), po.rects[m].height(), qPrintable(er.join(QLatin1Char(' '))), h.color);
+                        break;
+                    }
+                if (!fromRec && fileHighlightColor(pageId, QRectF(po.rects[m]), &h.color, &h.argb))
                     TLOG("edit: a highlight taken up with its colour from the page file (%d)", h.color);
                 e.hls.append(h);
                 used.insert(m);

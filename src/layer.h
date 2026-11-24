@@ -327,6 +327,9 @@ void objectBoxes(QObject *sc, const QString &page, QList<QRectF> *selected, QLis
     for (const Placement &p : po.found) {
         int in = 0;
         for (int m : p.members) if (m >= 0) { covered.insert(m); if (selKeys.contains(rectKey(po.rects[m]))) ++in; }
+        // its marks (highlight bands, an underline) are part of it, not strokes of their own with a box (developer:
+        // a dashed box around a highlight)
+        for (int i = 0; i < po.rects.size(); ++i) if (!covered.contains(i) && isMark(po, p, i)) covered.insert(i);
         if (in > 0 && selected) *selected << p.box;
         else if (in == 0 && others) *others << p.box;
     }

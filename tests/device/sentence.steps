@@ -1,0 +1,19 @@
+# A sentence with spaces (two lines), highlighted whole in the edit box (#3): it stays one object, its bands
+# recognized (device 2026-11-24: "not recorded", the words then boxed one by one).
+open
+object "testing  testing testing testing" 1100 1450
+tool select
+mark
+dtap 1160 1450
+expect-log "edit: 1 object\(s\)"
+key ctrl+a
+tap "#rmppTextobjHighlight"
+tap 1470 766
+expect-log "edit: \d+ highlight\(s\) from the box"
+expect-log "recorded: \d+ strokes, 1 highlight\(s\)"
+expect-no-log "not recorded"
+wait 3000
+tap 1300 1700
+wait 2500
+expect-ink 1090 1430 1500 1480 yellow
+shot sentence-1

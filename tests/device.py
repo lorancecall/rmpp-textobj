@@ -27,6 +27,7 @@ Checks (in a steps file; a failed check is reported and the test goes on):
                                    or R,G,B
   expect-ink X1 Y1 X2 Y2 [COLOR]   at least 20 pixels of COLOR (default ink: dark) in the rectangle
   expect-none X1 Y1 X2 Y2 [COLOR]  fewer than 5 such pixels
+  remember NAME X Y                the colour around X,Y, for COLOR "@NAME" later; COLOR "mark" is any highlight colour
   mark                             later expect-log / expect-no-log look only at lines after this point
 
 Environment: RMPP_HOST (default rmpp), RMPP_CTL (default ../rmpp-studio/rmpp_ctl.py), RMPP_SHOTS (default
@@ -58,7 +59,19 @@ TOOLS = {"pen": (56, 167), "highlighter": (56, 279), "text": (56, 392), "eraser"
 COLORS = {"white": (255, 255, 255), "ink": (0, 0, 0), "green": (172, 255, 133), "yellow": (255, 242, 117),
           "blue": (143, 209, 255), "pink": (255, 168, 214), "gray": (200, 200, 200)}
 
-STATE = {"mark": 0, "fails": [], "checks": 0}
+STATE = {"mark": 0, "fails": [], "checks": 0, "colours": {}}
+
+
+def colour_match(color):
+    """A pixel test for COLOR: a name, R,G,B, "mark" (any highlight colour: light and coloured, whatever the
+    highlighter's colour is) or "@NAME" (a colour remembered with `remember`)."""
+    if color == "ink":
+        return lambda p: sum(p) < 300
+    if color == "mark":
+        return lambda p: sum(p) >= 300 and max(p) - min(p) >= 40
+    want = (STATE["colours"][color[1:]] if color.startswith("@") else
+            COLORS[color] if color in COLORS else tuple(int(v) for v in color.split(",")))
+    return lambda p: max(abs(a - b) for a, b in zip(p, want)) <= 40
 
 
 def ctl(*args, check=True, stdin=None):
@@ -111,21 +124,52 @@ def lock_note(text):
         pass
 
 
-def step_open():
-    close_docs()
-    wait(1000)
-    # the library item (list or grid view; rmpp_ctl's open knows the grid only)
+def scratch_item():
+    """The scratch notebook's item in the library (list or grid view; rmpp_ctl's open knows the grid only)."""
     for line in ctl("find", '"scratch"', check=False).splitlines():
         m = re.match(r"\s*(-?\d+),(-?\d+) (\d+)x(\d+) Content(List|Grid)Item", line)
         if m:
-            x, y, w, h = map(int, m.groups()[:4])
-            ctl("tap", x + w // 4, y + h // 2)
+            return tuple(map(int, m.groups()[:4]))
+    return None
+
+
+def opened_since(since):
+    """Ids of the documents xochitl opened since the device time `since`."""
+    out = ssh(f'journalctl -u xochitl --since "@{since}" --no-pager -o cat | grep -F "Opening document"', check=False)
+    return re.findall(r"Opening document[^:]*: ([0-9a-f-]{36})", out)
+
+
+def step_open():
+    """Opens scratch, and only scratch: the item is tapped once its place holds still, and the document xochitl
+    opened is checked; another one is closed at once and the test stops (device 2026-11-24: the developer's own
+    notebooks were opened by a tap that landed on another item)."""
+    sid = scratch_id()
+    close_docs()
+    wait(2000)
+    item = None
+    for _ in range(5):
+        a = scratch_item()
+        wait(700)
+        b = scratch_item()
+        if a and a == b:
+            item = a
             break
-    else:
-        sys.exit("no notebook named scratch in My files")
+        wait(1000)
+    if not item:
+        sys.exit("the scratch notebook was not found at a steady place in the library")
+    x, y, w, h = item
+    since = device_now()
+    ctl("tap", x + w // 4, y + h // 2)
     wait(4000)
+    ids = opened_since(since)
+    if ids and ids[-1] != sid:
+        close_docs()
+        sys.exit(f"another notebook was opened ({ids[-1]}), not scratch: closed, stopped")
     if not doc_open():
         sys.exit("scratch did not open")
+    if not ids:
+        close_docs()
+        sys.exit("could not tell which notebook opened: closed, stopped")
     # the toolbar is needed for the tool buttons
     if "ToolButton" not in ctl("find", "#close-documentview-button", check=False):
         ctl("tap", 56, 56)
@@ -194,9 +238,15 @@ def step_erase(x1, x2, y):
 
 
 def step_dtap(x, y):
-    """A finger double tap."""
-    ctl("input", stdin=f"tap {x} {y} 50\nsleep 120\ntap {x} {y} 50\n")
-    wait(2000)
+    """A finger double tap; once more if the add-on did not see it (now and then the two taps were not taken for one,
+    device 2026-11-24)."""
+    for attempt in range(2):
+        since = device_now()
+        ctl("input", stdin=f"tap {x} {y} 50\nsleep 120\ntap {x} {y} 50\n")
+        wait(2000)
+        if any("double tap seen" in l for l in log_since(since)):
+            return
+        print("  (double tap not seen: again)", flush=True)
 
 
 def step_drag(x1, y1, x2, y2, n=12):
@@ -272,10 +322,8 @@ def region_count(x1, y1, x2, y2, color):
     path = os.path.join(SHOTS, "_check.png")
     ctl("shot", path)
     im = Image.open(path).convert("RGB").crop((x1, y1, x2, y2))
-    if color == "ink":
-        return sum(1 for p in im.getdata() if sum(p) < 300)
-    want = COLORS[color] if color in COLORS else tuple(int(v) for v in color.split(","))
-    return sum(1 for p in im.getdata() if max(abs(a - b) for a, b in zip(p, want)) <= 40)
+    ok = colour_match(color)
+    return sum(1 for p in im.getdata() if ok(p))
 
 
 def expect_region(x1, y1, x2, y2, color="ink", present=True):
@@ -327,7 +375,10 @@ def run_step(words):
     elif cmd in ("undo", "redo"):
         step_tool(cmd)
     elif cmd == "tap":
-        ctl("tap", *args)
+        try:
+            ctl("tap", *args)
+        except SystemExit as e:   # a query that finds nothing: a failed check, the test goes on
+            check(False, f"tap {' '.join(args)}: {e}")
         wait(1500)
     elif cmd == "dtap":
         step_dtap(int(args[0]), int(args[1]))
@@ -354,6 +405,16 @@ def run_step(words):
         expect_log(args[0])
     elif cmd == "expect-no-log":
         expect_log(args[0], present=False)
+    elif cmd == "remember":
+        from PIL import Image
+        os.makedirs(SHOTS, exist_ok=True)
+        path = os.path.join(SHOTS, "_check.png")
+        ctl("shot", path)
+        im = Image.open(path).convert("RGB")
+        x, y = int(args[1]), int(args[2])
+        px = [im.getpixel((x + dx, y + dy)) for dx in range(-2, 3) for dy in range(-2, 3)]
+        STATE["colours"][args[0]] = tuple(sum(p[i] for p in px) // len(px) for i in range(3))
+        print(f"  {args[0]} = {STATE['colours'][args[0]]}", flush=True)
     elif cmd == "expect-color":
         expect_color(int(args[0]), int(args[1]), args[2])
     elif cmd in ("expect-ink", "expect-none"):
