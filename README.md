@@ -13,7 +13,7 @@ Updates for newer OS versions may take some time to follow.
 > installed by rmpp setup, loaded into xochitl at every boot by rmpp-preload (no xovi), and kept up to date with
 > Vellum. How that differs from xovi: [how it works](https://github.com/lorancecall/rmpp-packages/blob/main/docs/how-it-works.md).
 >
-> Status: experimental.
+> Status: beta.
 
 ## Install
 
@@ -24,7 +24,7 @@ has **rmpp setup**, the installer for all rmpp add-ons.
   default; **Handwriting recognition (beta)** brings it too), and the rmpp-lang languages whose glyphs you need.
 - It installs `rmpp-lang` and `rmpp-preload` with it ([all packages and dependencies](https://github.com/lorancecall/rmpp-packages/blob/main/docs/packages.md)).
 - After a reMarkable OS update: **Restore** in rmpp setup.
-- Without rmpp setup, removing it, next to other mods, building it: [docs/install.md](docs/install.md).
+- Installing without rmpp setup, uninstalling, using it next to other mods, and building: [docs/install.md](docs/install.md).
 
 ## Use
 
@@ -32,9 +32,9 @@ has **rmpp setup**, the installer for all rmpp add-ons.
 - **Edit**: double tap an object with a finger: it is selected and its text, weight and size open for editing
   (Cancel leaves it selected to move).
 - **Always whole**: lasso, move, copy and delete act on whole objects; erasing part of one makes it plain strokes.
-- **Highlights** snap to the characters as a band that goes with the object and comes back on the same characters
-  after an edit; in the edit box, a Highlight button turns them on and off per character. Underlines and other
-  handwriting stay separate.
+- **Highlights** snap to whole characters, move with the object, and stay on the same characters after an edit; in
+  the edit box, a Highlight button turns them on and off per character. Underlines and other handwriting stay
+  separate.
 - **Handwriting to text objects**: [rmpp-hwr](https://github.com/lorancecall/rmpp-hwr)'s lasso convert.
 
 Details: [docs/usage.md](docs/usage.md).
@@ -44,7 +44,8 @@ Details: [docs/usage.md](docs/usage.md).
 Loaded into xochitl by rmpp-preload, it draws text with the glyphs of [rmpp-lang](https://github.com/lorancecall/rmpp-lang)'s
 language add-ons (this package has ASCII only; text with characters no installed language has is refused, naming
 them). Each object carries its own record inside its strokes, so it is found wherever it was moved, scaled or
-copied, syncs with the page and can be edited on another tablet with this add-on; without it, it is plain handwriting.
+copied, syncs with the page and can be edited on another tablet with this add-on. On a tablet without this add-on,
+the object is plain handwriting.
 The code and its tests: [docs/develop.md](docs/develop.md).
 
 ## Build
@@ -53,5 +54,5 @@ The code and its tests: [docs/develop.md](docs/develop.md).
 
 ## License
 
-GPL-3.0 (see LICENSE). `data/glyphs.json`: glyph centre lines derived from Noto Sans KR, SIL Open Font License 1.1
+GPL-3.0-only (see LICENSE). `data/glyphs.json`: glyph centre lines derived from Noto Sans KR, SIL Open Font License 1.1
 (see NOTICE and data/OFL-NotoSansKR.txt).
