@@ -6,8 +6,8 @@ keeps working after a reboot.
 
 ![Typed notes, then text objects added beside them: moved into place, highlighted, and edited with a double tap](docs/images/textobj-demo.gif)
 
-Made for and tested on the reMarkable Paper Pro with OS 3.29 only; other reMarkable models are not supported
-and their compatibility is not guaranteed. Following newer OS versions happens when I have time, and may not happen.
+Made for and tested on the reMarkable Paper Pro with OS 3.29. Other reMarkable models are not supported.
+Updates for newer OS versions may take some time to follow.
 
 > Part of the **rmpp add-ons**, built on [rmpp-packages](https://github.com/lorancecall/rmpp-packages): it is
 > installed by rmpp setup, loaded into xochitl at every boot by rmpp-preload (no xovi), and kept up to date with
