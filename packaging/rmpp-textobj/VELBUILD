@@ -1,6 +1,6 @@
 maintainer="lorancecall <84116812+lorancecall@users.noreply.github.com>"
 pkgname=rmpp-textobj
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 upstream_author="lorancecall"
 category="ui"
@@ -89,7 +89,7 @@ predeinstall() {
 	fi
 }
 sha512sums="
-ffdb2df5a0cba4bf21585ea6e03767cc914aeb2f54581d5dc976a406f56416629fb97f056f1bb14ffd4e090d7634a3cb0264c74446418700198f842d0f911ddd  librmpp-textobj-ui.so
+1a4095c2a5954ec2b077256979623a473f3d092d56e5107abf678229f89e8995c9c45a5691f73416f2665b9918cd3119368bc52dc7bdaf44d62e36e331422bc4  librmpp-textobj-ui.so
 83cc1f64382c27fd4afef829db8856e37aa7f24457c13ad6628faad918df955eeb53a1a70ebeeba4d4d644ba3c4a9094c3e09153d92f11e3937bd2393ea12b29  glyphs.json
 900ef9b1d0e1435fb3aad32f035edf8890538292ebb3104af2feb386fb25df134ed0172a0ec542b2c25ff69a39ae62b34ad17e01b3522067a7328abb25aa4fff  LICENSE
 "
